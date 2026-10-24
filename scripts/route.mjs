@@ -4,6 +4,10 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { effectiveRouterEnabled, loadRouterSettings, validateRouterSettings } from './native-api-settings.mjs';
+import { readNativeModelOptions } from './native-model-catalog.mjs';
+import { resolveCurrentMainModel } from './native-current-model.mjs';
+import { readUpgradeGuardStatus } from './native-upgrade-status.mjs';
 
 const DEEPSEEK_NATIVE_SLUG = 'deepseek/deepseek-flash';
 
@@ -19,7 +23,7 @@ const HOLIDAYS_2026 = [
 
 const CHINA_TIMEZONE = 'Asia/Shanghai';
 const PEAK_UTC_HOURS = [[1, 4], [6, 10]];
-const EXECUTORS = new Set(['luna', 'deepseek']);
+const BUILTIN_EXECUTORS = new Set(['luna', 'deepseek', 'same']);
 
 function localDate(instant, timezone) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -79,7 +83,7 @@ function queueWrite(file, operation) {
   });
 }
 
-async function readOverride(sessionId, stateDir) {
+async function readOverride(sessionId, stateDir, settings) {
   if (!sessionId) return null;
   let value;
   try {
@@ -88,10 +92,26 @@ async function readOverride(sessionId, stateDir) {
     if (error.code === 'ENOENT') return null;
     throw new Error(`Cannot read this chat's router override; refusing automatic routing: ${error.message}`);
   }
-  if (!value || typeof value !== 'object' || !EXECUTORS.has(value.executor)) {
+  if (!value || typeof value !== 'object' || typeof value.executor !== 'string') {
+    throw new Error('This chat has an invalid router override; refusing automatic routing. Reset the session override after inspecting the state file.');
+  }
+  try { resolveSelector(value.executor, settings); }
+  catch {
     throw new Error('This chat has an invalid router override; refusing automatic routing. Reset the session override after inspecting the state file.');
   }
   return value.executor;
+}
+
+function resolveSelector(selector, settings) {
+  if (BUILTIN_EXECUTORS.has(selector)) return { executor: selector, profileId: null, profile: null };
+  if (typeof selector === 'string' && /^native:[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(selector)) {
+    return {executor: 'native', model: selector.slice('native:'.length), profileId: null, profile: null};
+  }
+  const direct = settings.profiles[selector];
+  if (direct) return { executor: 'api', profileId: direct.profileId, profile: direct };
+  const matches = Object.values(settings.profiles).filter((profile) => profile.aliases?.includes(selector));
+  if (matches.length === 1) return { executor: 'api', profileId: matches[0].profileId, profile: matches[0] };
+  throw new Error('unknown executor profile');
 }
 
 async function writeOverride(sessionId, executor, stateDir) {
@@ -126,50 +146,120 @@ async function writeOverride(sessionId, executor, stateDir) {
 }
 
 export async function decideRoute({
-  at = new Date(), executor, setSessionExecutor,
-  resetSession = false, sessionId, stateDir,
+  at = new Date(), executor, setSessionExecutor, mainModel, trustedMainModel = mainModel,
+  explicitMainModel, currentModelThreadId, guardStatus,
+  resetSession = false, sessionId, stateDir, routerSettings, settingsPath,
+  readNativeModels = readNativeModelOptions, currentModelResolver = resolveCurrentMainModel,
+  readGuardStatus = readUpgradeGuardStatus,
 } = {}) {
   if (typeof at === 'string' && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(at)) {
     throw new Error('--at must be a complete ISO timestamp with Z or an explicit UTC offset');
   }
   const instant = at instanceof Date ? at : new Date(at);
   if (!Number.isFinite(instant.getTime())) throw new Error(`Invalid --at date: ${at}`);
-  if (executor !== undefined && !EXECUTORS.has(executor)) throw new Error('--executor must be luna or deepseek');
-  if (setSessionExecutor !== undefined && ![...EXECUTORS, 'auto'].includes(setSessionExecutor)) throw new Error('--set-session-executor must be luna, deepseek, or auto');
+  const settings = routerSettings === undefined
+    ? await loadRouterSettings(settingsPath)
+    : validateRouterSettings(routerSettings);
+  const effectiveGuardStatus = settings.enabled === false
+    ? guardStatus
+    : guardStatus === undefined ? await readGuardStatus() : guardStatus;
+  if (!effectiveRouterEnabled(settings, effectiveGuardStatus)) {
+    const guarded = effectiveGuardStatus?.state === 'disabled';
+    return {
+      phase: 'disabled',
+      source: guarded ? 'guard_disabled' : 'disabled',
+      executor: 'off',
+      profileId: null,
+      evaluatedAt: instant.toISOString(),
+      timezone: CHINA_TIMEZONE,
+      reason: guarded
+        ? 'automatic child delegation is disabled by the lifecycle guard'
+        : 'automatic child delegation is disabled in router settings',
+    };
+  }
+  if (executor !== undefined) {
+    try { resolveSelector(executor, settings); }
+    catch { throw new Error('--executor must be luna, deepseek, or a configured API profile/alias'); }
+  }
+  if (setSessionExecutor !== undefined && setSessionExecutor !== 'auto') {
+    try { resolveSelector(setSessionExecutor, settings); }
+    catch { throw new Error('--set-session-executor must be luna, deepseek, auto, or a configured API profile/alias'); }
+  }
   if (sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId.trim())) throw new Error('--session must be a non-empty chat ID');
   if (setSessionExecutor && !sessionId) throw new Error('--session is required to save a session override');
   if (resetSession && !sessionId) throw new Error('--session is required to reset a session override');
   if (resetSession && setSessionExecutor) throw new Error('Choose either --reset-session or --set-session-executor');
 
   if (resetSession) await writeOverride(sessionId, null, stateDir);
-  if (setSessionExecutor) await writeOverride(sessionId, setSessionExecutor === 'auto' ? null : setSessionExecutor, stateDir);
+  if (setSessionExecutor) {
+    const normalizedOverride = setSessionExecutor === 'auto' ? null : resolveSelector(setSessionExecutor, settings).profileId || setSessionExecutor;
+    await writeOverride(sessionId, normalizedOverride, stateDir);
+  }
 
-  const scheduled = {
-    ...scheduleRoute(instant),
+  const scheduled = settings.mode === 'fixed'
+    ? { phase: 'fixed', source: 'fixed', reason: 'fixed executor selection; calendar not consulted' }
+    : scheduleRoute(instant);
+  const plan = {
+    ...scheduled,
     evaluatedAt: instant.toISOString(),
     timezone: CHINA_TIMEZONE,
-    calendarVersion: localDate(instant, CHINA_TIMEZONE).startsWith('2026-') ? 'china-public-holidays-2026' : 'missing',
+    calendarVersion: settings.mode === 'fixed' ? 'not_used' : localDate(instant, CHINA_TIMEZONE).startsWith('2026-') ? 'china-public-holidays-2026' : 'missing',
   };
-  let result = scheduled;
+  const planSelector = settings.mode === 'fixed'
+    ? settings.fixedExecutor
+    : settings.mode === 'scheduled'
+      ? settings.schedule[scheduled.phase === 'valley' ? 'valley' : 'peak']
+      : scheduled.executor;
+  let selector = planSelector;
+  let source = plan.source;
+  let reason = plan.reason;
   if (executor !== undefined) {
-    result = { ...scheduled, executor, source: 'one_time_override', reason: `one-time explicit executor override: ${executor}` };
+    selector = executor;
+    source = 'one_time_override';
+    reason = `one-time explicit executor override: ${executor}`;
   } else {
-    const sticky = await readOverride(sessionId, stateDir);
-    if (sticky) result = { ...scheduled, executor: sticky, source: 'session_override', reason: `sticky executor override for this chat: ${sticky}` };
+    const sticky = await readOverride(sessionId, stateDir, settings);
+    if (sticky) {
+      selector = sticky;
+      source = 'session_override';
+      reason = `sticky executor override for this chat: ${sticky}`;
+    }
   }
-  return {
-    ...result,
-    native_spawn: {
+  const resolved = resolveSelector(selector, settings);
+  if (resolved.executor === 'native') {
+    const catalog = await readNativeModels();
+    if (!catalog.some(model => model?.value === resolved.model)) {
+      throw new Error(`Selected native model is not present in the current Codex catalog: ${resolved.model}`);
+    }
+  }
+  const result = { ...plan, executor: resolved.executor, profileId: resolved.profileId, source, reason };
+  const currentModel = resolved.executor === 'same'
+      ? await currentModelResolver({trustedModel: trustedMainModel, explicitModel: explicitMainModel, ...(currentModelThreadId ? {threadId: currentModelThreadId} : {})})
+    : null;
+  const nativeSpawn = resolved.executor === 'api'
+    ? {
       fork_turns: 'none',
-      ...(result.executor === 'deepseek'
+      agent_type: `native_api_${resolved.profileId}`,
+      provider_id: `api-native-${resolved.profileId}`,
+      profile_id: resolved.profileId,
+      resolved_model: resolved.profile.model,
+    }
+    : {
+      fork_turns: 'none',
+      ...(resolved.executor === 'deepseek'
         ? { agent_type: 'native_deepseek', resolved_model: DEEPSEEK_NATIVE_SLUG }
         : {}),
-    },
+      ...(resolved.executor === 'same' ? {model: currentModel.model} : {}),
+      ...(resolved.executor === 'native' ? {model: resolved.model} : {}),
+    };
+  return {
+    ...result,
+    native_spawn: nativeSpawn,
   };
 }
 
 function usage() {
-  return `Usage: node scripts/route.mjs [options]\n\nOptions:\n  --at ISO_DATE                    Evaluate a test or supplied instant\n  --executor luna|deepseek         One-task manual override\n  --session ID                     Chat-specific state key (not a prompt or secret)\n  --set-session-executor luna|deepseek|auto\n  --reset-session                  Clear this chat's sticky override\n  --state-dir PATH                 State root (tests only; default is per-user LocalAppData)\n  --json                           Print one JSON result\n`;
+  return `Usage: node scripts/route.mjs [options]\n\nOptions:\n  --at ISO_DATE                    Evaluate a test or supplied instant\n  --executor SELECTOR             One-task override: luna, deepseek, same, native:<slug>, profile ID, or alias\n  --main-model MODEL               Explicit fallback; live chat metadata takes precedence\n  --session ID                     Chat-specific state key (not a prompt or secret)\n  --set-session-executor SELECTOR  luna, deepseek, same, native:<slug>, profile ID/alias, or auto\n  --settings PATH                  Router settings JSON (default: plugin LocalAppData path)\n  --reset-session                  Clear this chat's sticky override\n  --state-dir PATH                 State root (tests only; default is per-user LocalAppData)\n  --json                           Print one JSON result\n`;
 }
 
 async function main(argv) {
@@ -180,9 +270,9 @@ async function main(argv) {
     if (arg === '--json') { json = true; continue; }
     if (arg === '--help' || arg === '-h') { process.stdout.write(usage()); return; }
     const fields = {
-      '--at': 'at', '--executor': 'executor',
+      '--at': 'at', '--executor': 'executor', '--main-model': 'explicitMainModel',
       '--session': 'sessionId', '--set-session-executor': 'setSessionExecutor',
-      '--state-dir': 'stateDir',
+      '--state-dir': 'stateDir', '--settings': 'settingsPath',
     };
     if (arg === '--reset-session') { options.resetSession = true; continue; }
     const value = argv[i + 1];

@@ -1,5 +1,9 @@
 # 隔离 CLI 安装编排
 
+## 0.10.5 bounded retry 候选
+
+0.10.5 候选为专用 `native_deepseek` 子代理在角色配置中关闭 `unbounded_connection_retries`，保留 Sol/root 与其他角色的默认行为。配置与回滚 fixture 已覆盖复用既有 gateway/Task 时的 role 更新和字节恢复。patched CLI 已通过 Windows GREEN 构建并在一台主机安装、激活及完整退出重启后观察到；[后续桌面记录](native-desktop-acceptance-0.10.5-2026-10-18.md)列出实际范围和仍未完成的目标矩阵。0.10.4 的安装和桌面验收记录仍只描述当时已安装版本。
+
 ## 0.10.4 发布说明
 
 0.10.4 将 gateway 五脚本绑定到 `native-isolated` 下的内容寻址 bundle，使受管 Task 的后续启动不依赖会被插件刷新清理的 cache；停止网关时按已验证的 PID/身份确认进程退出，不能仅凭 `Stop-ScheduledTask` 成功推断 Node 已结束。配置回滚会先验证受管 provider、role 三表及 gateway identity 仍与本事务一致，并拒绝会使 root provider 或 root URL 依赖该隔离 provider 的配置；通过后只移除本插件受管表，保留当前其他配置原文。受管字段漂移仍会拒绝回滚。此版本说明源码行为与回滚边界，不代表正式 Task 故障验收或桌面/UI 验收已通过；这些仍待单独验证。
@@ -26,7 +30,7 @@ smoke 完成后，`prepare` 仅对路径校验通过的本次临时 fixture 删�
 
 `activate` 首先重验 runtime、文件、事务中的环境快照、旧受管 Startup VBS、任务快照和 launcher。之后按顺序写入隐藏同步 VBS launcher、注册或验证精确匹配的当前用户 Task Scheduler 任务、启动并检查独立 gateway，再删除旧受管 Startup VBS，最后应用 Codex 文件与环境变量。Task 使用当前交互用户、Limited 权限、IgnoreNew、隐藏运行且无执行时限；它调用正式安装目录的 `native-gateway.mjs --serve --deepseek-only`。严格模式只接受 DeepSeek 模型，拒绝 GPT/未知模型和加密协作输入，并强制关闭 GPT relay；它不会要求或伪造 GPT 登录成功。dispatch gate 还要求健康响应明确报告 `deepseek_only=true`、`relay_allowed=false`，且受管 Task 状态为 `Running`，因此旧的非严格网关不能满足正式路径。普通 direct/legacy 网关仍保留旧兼容行为。不创建 DSH 会话或工作区。激活失败会尝试按本事务快照恢复；若任何阶段恢复不确定，会将 journal 标为 `activation_recovery_failed` 并列出阶段。
 
-`rollback` 先检查所有受管值仍等于本事务写入内容，再恢复文件、环境、Startup、任务和 launcher。它只会在网关由本事务启动且当前 PID、身份与健康检查仍匹配时停止网关；既有受管任务/网关会保留。用户后续修改会导致回滚拒绝覆盖。成功迁移时，journal 的 `autostart.retiredLegacy` 单独记录旧受管 Startup 是否已退役；因此即使 root config 已无旧 marker、但 manifest 证明存在旧 role/catalog 残留，成功 rollback 也不会重建旧 Startup。此标记不扩大 `files.legacyMigration`。激活失败发生在旧安装退役完成前，仍逐字恢复 prior Startup。旧 journal 未包含该标记时，rollback 仍按旧 `legacyMigration` 判断兼容行为。迁移事务还保留两种配置快照：激活失败时恢复原始字节；用户主动 rollback 时恢复经过 manifest 验证的 `prior_root` 干净配置并移除隔离配置。`prior_root` 若本来就是用户的 localhost 设置，则按原值保留。首次安装无 config 迁移时，config 文件仍逐字恢复 prior；已退役的受管 Startup 不恢复。缺少迁移卸载快照的旧 journal 会在更改状态前明确拒绝卸载。`status` 的 `configured=true`、`restartNeeded=true` 只表示配置已写入并需要重启；`runtimeObserved=false` 和 `desktopAccepted=false` 仍为真实桌面验收前的状态。需要桌面重启后单独验收，不能由 mock、配置 smoke 或 task health 推断 UI 接受。
+`rollback` 先检查所有受管值仍等于本事务写入内容，再恢复文件、环境、Startup、任务和 launcher。它只会在网关由本事务启动且当前 PID、身份与健康检查仍匹配时停止网关；既有受管任务/网关会保留。用户后续修改会导致回滚拒绝覆盖。成功迁移时，journal 的 `autostart.retiredLegacy` 单独记录旧受管 Startup 是否已退役；因此即使 root config 已无旧 marker、但 manifest 证明存在旧 role/catalog 残留，成功 rollback 也不会重建旧 Startup。此标记不扩大 `files.legacyMigration`。激活失败发生在旧安装退役完成前，仍逐字恢复 prior Startup。旧 journal 未包含该标记时，rollback 仍按旧 `legacyMigration` 判断兼容行为。迁移事务还保留两种配置快照：激活失败时恢复原始字节；用户主动 rollback 时恢复经过 manifest 验证的 `prior_root` 干净配置并移除隔离配置。`prior_root` 若本来就是用户的 localhost 设置，则按原值保留。首次安装无 config 迁移时，config 文件仍逐字恢复 prior；已退役的受管 Startup 不恢复。缺少迁移卸载快照的旧 journal 会在更改状态前明确拒绝卸载。`status` 的 `configured=true`、`restartNeeded=true` 只表示配置已写入并需要重启；`runtimeObserved=false` 和 `desktopAccepted=false` 是该静态 journal/status 输出的值，不会随桌面启动后被回写为最新运行事实。它们仍是桌面验收前的保守诊断；本机后续只读运行观察见[桌面验收记录](native-desktop-acceptance-0.10.5-2026-10-18.md)。需将实际桌面验收与配置 smoke/task health 分开判断。
 
 配置合并只识别精确的三个受管 TOML 表。dispatch 与 rollback 均要求这三表、role 路径及 gateway identity 与事务计划匹配；受管字段漂移会被拒绝。rollback 还会拒绝 root provider 或 root URL 依赖隔离 provider 的情形。验证通过后，rollback 仅删除本插件受管表及 marker，保留当前其他 TOML 配置（包括后来新增的 skills、MCP、设置和外部注释）原文；这不放宽对受管字段或 root 路由依赖的检查。
 

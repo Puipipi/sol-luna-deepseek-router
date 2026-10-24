@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "evidenceId": "native-api-0.11.4-local-validation-2026-10-19",
+  "purpose": "Public, redacted local validation record; not final product acceptance.",
+  "source": {
+    "codeCommit": "a6bdd4e6ce46677b249a8d8b741ec175fb03e923",
+    "packageArtifact": {
+      "sha256": "1b77fb97919d7646a6fca3c04e98f771939bab6e803886975cc0261e92ba4b83",
+      "bytes": 577919,
+      "sourceFiles": 167
+    },
+    "cliBinary": {
+      "sha256": "48d1d326f2567cdc602c03337674d22da4d1933e36e84d5df229a93ff5ea174b",
+      "receiptConfirmedHashMatch": true
+    },
+    "publicHarness": "tests/native-api-cli-smoke.mjs",
+    "receipts": {
+      "privateInstallReceiptSha256": "12c14872727e26086ea01ae512864a2cd9a1c2e52c2d5732323d97d7614d2054",
+      "privateCliReceiptSha256": "1336004eab62de3663ba5c5d0d545b1e53631fcf58367d8862fb46c47a14ab40"
+    }
+  },
+  "installation": {
+    "officialCliStepsExitCodes": [
+      0,
+      0,
+      0
+    ],
+    "steps": "Official CLI marketplace remove/add and immutable plugin-add steps exited successfully; this does not claim that a plugin remove command succeeded.",
+    "pluginVersion": "0.11.4",
+    "enabledPluginCount": 1,
+    "newCache": {
+      "files": 167,
+      "allMatchImmutable": true,
+      "missing": 0,
+      "different": 0,
+      "extra": 0,
+      "reparsePoints": 0
+    },
+    "preservedOldCache": {
+      "version": "0.11.3",
+      "files": 166,
+      "restoredExactly": true,
+      "role": "Preserved from private backup for an older running process; not a second enabled plugin."
+    },
+    "config": {
+      "onlyRootConfigChange": "marketplace.source path",
+      "semanticContentEqualOtherwise": true,
+      "canonicalOwned": 98,
+      "canonicalForeign": 4,
+      "canonicalTotal": 102,
+      "canonicalManifestUnchanged": true,
+      "apiOnly": true,
+      "relay": false,
+      "fixedExecutor": "luna",
+      "peak": "luna",
+      "valley": "deepseek",
+      "installationUpstreamModelRequests": 0,
+      "requestScopeNote": "Installation gateway/model traffic only; excludes Sol/Luna coordination-model calls.",
+      "settingsUnchanged": true,
+      "sourceBundleDigest": "9b8528c6aa01f63daa4144c9c50e863776e93949bf80fa5f47d6e8eae1db7c29"
+    },
+    "runtimeObservation": "The active MCP process source version was not observed; reload/display/save is not established."
+  },
+  "cliLoopback": {
+    "command": "node tests/native-api-cli-smoke.mjs --binary <verified-binary> --sha256 <sha256> --scenario ds-responses",
+    "exitCode": 0,
+    "receiptConfirmedHashMatch": true,
+    "temporaryCodexHomeAndWorkspace": true,
+    "boundary": "All upstream traffic was redirected to a 127.0.0.1 mock; external proxy requests were rejected with HTTP 403.",
+    "mockInteraction": "Mock SSE completed a native CLI tool call, exec_command, and tool-result replay, as asserted by the existing harness.",
+    "cliRequests": 2,
+    "cliRequestJsonBytes": [
+      46382,
+      47230
+    ],
+    "normalizedUpstreamLoopbackBodyBytes": [
+      45020,
+      45868
+    ],
+    "toolsPerRequest": 8,
+    "toolSchemaBytes": 18292,
+    "receiptMetricEntries": 4,
+    "metricInterpretation": "The CLI process ran once and issued two requests; four metric entries represent gateway ingress and mock-upstream parsing for those requests, not four requests from the CLI."
+  },
+  "limitations": [
+    "apiVerified=false: no real DeepSeek end-to-end validation, and no new desktop tool or thinking-display acceptance.",
+    "The previously authorized one-time attempt was consumed and failed; it was not retried.",
+    "The 0.11.4 message-conversion fix is evidenced only by local/mock and real-CLI loopback; this does not prove behavior against the DeepSeek upstream.",
+    "supports_search_tool=false would expose eligible MCP tools directly; the adapter does not support the special typed tool_search path, so this flag cannot simply be enabled.",
+    "No exact desktop request size was captured; attribution of parent metadata inventory of 448 tools or the child recorded input usage of 187226 tokens remains unresolved. Input-cost attribution is unresolved.",
+    "forknone does not mean the base prompt or tool schema was absent."
+  ],
+  "validation": "Safe-receipt fingerprints and selected fields checked locally; no raw receipt, logs, prompts, reasoning, request bodies, identity data, credentials, local paths, session identifiers, process identifiers, or ports are included."
+}

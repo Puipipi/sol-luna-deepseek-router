@@ -37,12 +37,14 @@ const fresh = [
   "",
   "[features]",
   "multi_agent = true",
+  "unbounded_connection_retries = true",
   "",
 ].join("\n");
 const first = composeIsolatedConfig(fresh, opts);
 ok(first.includes('model = "gpt-6.1-sol"'), "fresh config retains user's selected model");
 ok(first.includes('openai_base_url = "https://user.example/v1"'), "fresh config retains user root routing");
 ok(first.includes('model_catalog_json = "https://user.example/catalog.json"'), "fresh config retains user catalog");
+ok(first.includes("unbounded_connection_retries = true"), "isolated config preserves the user's root retry feature");
 ok(!/# sol-luna-native-isolated begin[\s\S]*?openai_base_url\s*=/.test(first), "owned block does not set root routing");
 ok(first.includes("[model_providers.deepseek-native]"), "isolated provider is added");
 ok(first.includes('wire_api = "responses"'), "provider uses Responses wire API");
@@ -246,8 +248,15 @@ throws(() => composeIsolatedConfig(legacyConflict, {
 }), /root.*conflict/i, "legacy migration does not overwrite a root key added by the user");
 
 const role = isolatedAgentToml();
+const developerInstructionsStart = role.indexOf('developer_instructions = """');
+const developerInstructionsEnd = role.indexOf('\n"""', developerInstructionsStart);
+const retryFeaturesStart = role.indexOf("\n[features]\n");
+ok(developerInstructionsStart >= 0 && developerInstructionsEnd > developerInstructionsStart && retryFeaturesStart > developerInstructionsEnd,
+  "developer instructions close as a root-level multiline string before the retry feature table");
 ok(role.includes('model = "deepseek/deepseek-flash"'), "role fixes the exact DeepSeek model slug");
 ok(role.includes('model_reasoning_effort = "high"'), "role sets high reasoning effort");
+ok(role.includes("[features]\nunbounded_connection_retries = false"), "dedicated DeepSeek role disables unbounded connection retries");
+ok(!/^unbounded_connection_retries\s*=\s*true$/m.test(role), "dedicated DeepSeek role does not inherit an enabled retry override");
 ok(role.includes('name = "native_deepseek"') && role.includes("description ="), "role remains discoverable by the agent loader");
 ok(role.includes("developer_instructions = \"\"\""), "role contains developer instructions");
 ok(role.includes("中文"), "role instructions are Chinese");

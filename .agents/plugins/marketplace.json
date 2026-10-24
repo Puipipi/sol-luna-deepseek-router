@@ -1,7 +1,7 @@
 {
   "name": "sol-luna",
   "interface": {
-    "displayName": "Sol Luna"
+    "displayName": "Sol 主控 · 多模型峰谷子代理"
   },
   "plugins": [
     {

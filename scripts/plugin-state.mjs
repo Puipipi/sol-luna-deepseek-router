@@ -279,6 +279,12 @@ export class OwnershipStore {
   async snapshot() {
     return this._read();
   }
+
+  async hasActiveExecutions() {
+    const data = await this._read();
+    const idle = new Set([...TERMINAL_STATUSES, 'idle']);
+    return Object.values(data.agents).some(record => !idle.has(record?.status));
+  }
 }
 
 const ACTIVE_LEASE_STATUSES = new Set(['starting', 'running', 'interrupting']);

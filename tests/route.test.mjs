@@ -11,6 +11,14 @@ import { decideRoute } from '../scripts/route.mjs';
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const cliPath = path.join(repoRoot, 'scripts', 'route.mjs');
 const shanghai = '+08:00';
+const priorCodexHome = process.env.CODEX_HOME;
+const priorLocalAppData = process.env.LOCALAPPDATA;
+process.env.CODEX_HOME = path.join(os.tmpdir(), `route-test-codex-home-${process.pid}`);
+process.env.LOCALAPPDATA = path.join(os.tmpdir(), `route-test-local-${process.pid}`);
+process.on('exit', () => {
+  if (priorCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = priorCodexHome;
+  if (priorLocalAppData === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = priorLocalAppData;
+});
 let checks = 0;
 
 function equal(actual, expected, message) {
@@ -245,8 +253,8 @@ try {
   equal(missing.source, 'schedule', 'missing state file falls back to the schedule');
 
   for (const [options, pattern] of [
-    [{ executor: 'other', at: `2026-10-19T10:30:00${shanghai}` }, /--executor must be luna or deepseek/],
-    [{ setSessionExecutor: 'other', sessionId, stateDir }, /--set-session-executor must be luna, deepseek, or auto/],
+    [{ executor: 'other', at: `2026-10-19T10:30:00${shanghai}` }, /configured API profile/],
+    [{ setSessionExecutor: 'other', sessionId, stateDir }, /--set-session-executor must be luna, deepseek, auto, or a configured API profile/],
     [{ setSessionExecutor: 'luna' }, /--session is required to save a session override/],
     [{ resetSession: true }, /--session is required to reset a session override/],
     [{ resetSession: true, setSessionExecutor: 'luna', sessionId, stateDir }, /Choose either/],
@@ -293,7 +301,7 @@ for (const [args, pattern] of [
   [['--session', '--json'], /missing value/],
   [['--session', '', '--json'], /missing value/],
   [['--at', '', '--json'], /missing value/],
-  [['--executor', 'other', '--json'], /luna or deepseek/],
+  [['--executor', 'other', '--json'], /configured API profile/],
   [['--set-session-executor', 'auto', '--json'], /--session is required/],
   [['--at', '2026-10-19T10:30:00', '--json'], /explicit UTC offset/],
   [['--unknown', 'value', '--json'], /Unknown option/],

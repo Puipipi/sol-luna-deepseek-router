@@ -9,7 +9,8 @@ import { composeIsolatedConfig, hasLegacyGatewayConfigMarker, removeIsolatedConf
 import { runIsolatedConfigSmoke } from "./native-isolated-smoke.mjs";
 import { ensureGateway, gatewayHealth, gatewayPaths, prepareGatewayIdentity, readGatewayIdentity, readGatewayState, stopGateway } from "./native-gateway-manager.mjs";
 import { createWindowsTaskSchedulerAdapter, gatewayTaskPlan, registerOwnedGatewayTask, restoreGatewayTask, snapshotGatewayTask, statusOwnedGatewayTask, createOwnedGatewayTaskLauncher } from "./native-gateway-task.mjs";
-import { createWindowsUserEnvironmentAdapter, apply as applyEnvironment, plan as planEnvironment, rollback as rollbackEnvironment } from "./native-runtime-env.mjs";
+import { applyBootstrapEnvironment, NATIVE_BOOTSTRAP_PATH, planBootstrapEnvironment, rollbackBootstrapEnvironment } from "./native-bootstrap-install.mjs";
+import { createWindowsUserEnvironmentAdapter } from "./native-runtime-env.mjs";
 import { verifyRuntimeVersion } from "./native-runtime.mjs";
 import { gatewaySourceEntry, stageGatewaySource, verifyGatewaySource } from "./native-gateway-source.mjs";
 
@@ -321,10 +322,14 @@ export async function prepare(options = {}, dependencies = {}) {
   if (!persistedIdentity?.token || persistedIdentity.token !== identity.token || persistedIdentity.port !== identity.port) throw new Error("gateway identity could not be verified");
   const baseUrl = `http://127.0.0.1:${identity.port}/${identity.token}/v1`;
   const resolvedJournalPath = path.resolve(journalPath);
-  const envPlan = await planEnvironment({
-    versionDir,
+  const bootstrapSourcePath = options.bootstrapSourcePath || NATIVE_BOOTSTRAP_PATH;
+  const bootstrapSourceHash = createHash("sha256").update(await readFile(bootstrapSourcePath)).digest("hex");
+  const envPlan = await planBootstrapEnvironment({
+    bootstrapPath: options.bootstrapPath || path.join(path.resolve(codexHome), "router-runtime", "bootstrap", `${bootstrapSourceHash}.exe`),
+    bootstrapSourcePath,
+    officialPath: options.officialPath,
     currentEnvironment: await snapshotEnvironment(envAdapter, ["CODEX_CLI_PATH", "SOL_LUNA_NATIVE_PLAINTEXT_V2", INSTALL_JOURNAL_ENV_KEY]),
-    installJournalPath: resolvedJournalPath,
+    journalPath: resolvedJournalPath,
   });
   const startupPrior = await snapshotStartup(autostartAdapter, startupFile);
   if (!isManagedOldStartup(startupPrior)) throw new Error("unowned Startup VBS exists; refusing to remove or replace it");
@@ -504,7 +509,7 @@ export async function activate({ journalPath, envAdapter = createWindowsUserEnvi
     journal.completed.files = true; await writeJournal(journalPath, journal);
 
     attempted.environment = journal.attempted.environment = true; await writeJournal(journalPath, journal);
-    journal.environmentSnapshot = await applyEnvironment(journal.environment, envAdapter);
+    journal.environmentSnapshot = await applyBootstrapEnvironment(journal.environment, envAdapter);
     journal.completed.environment = true; await writeJournal(journalPath, journal);
 
     journal.phase = "active";
@@ -534,7 +539,7 @@ export async function activate({ journalPath, envAdapter = createWindowsUserEnvi
       } catch (item) { recoveryErrors.push(item); indeterminate.push("gateway"); journal.completed.gateway = null; }
     }
     if (attempted.environment && journal.environmentSnapshot) {
-      try { await rollbackEnvironment(journal.environmentSnapshot, envAdapter); journal.completed.environment = false; }
+      try { await rollbackBootstrapEnvironment(journal.environmentSnapshot, envAdapter); journal.completed.environment = false; }
       catch (item) { recoveryErrors.push(item); indeterminate.push("environment"); journal.completed.environment = null; }
     } else if (attempted.environment && error instanceof AggregateError) {
       recoveryErrors.push(error); indeterminate.push("environment"); journal.completed.environment = null;
@@ -745,7 +750,7 @@ export async function rollback({ journalPath, envAdapter = createWindowsUserEnvi
     await writeJournal(journalPath, journal).catch((writeError) => errors.push(writeError));
     throw new AggregateError(errors, "rollback could not restore the gateway Task; remaining owned state was preserved");
   }
-  if (journal.completed.environment) try { await rollbackEnvironment(journal.environmentSnapshot, envAdapter); journal.completed.environment = false; } catch (error) { journal.completed.environment = null; indeterminate.push("environment"); errors.push(error); }
+  if (journal.completed.environment) try { await rollbackBootstrapEnvironment(journal.environmentSnapshot, envAdapter); journal.completed.environment = false; } catch (error) { journal.completed.environment = null; indeterminate.push("environment"); errors.push(error); }
   if (journal.completed.files) try { await rollbackFiles(filesForRollback, { target: legacyMigration ? "uninstall" : "prior" }); journal.completed.files = false; } catch (error) { journal.completed.files = null; indeterminate.push("files"); errors.push(error); }
   if (journal.completed.autostart) try {
     if (!retiredLegacyStartup) await restoreStartupChecked(journal.autostart, startup);

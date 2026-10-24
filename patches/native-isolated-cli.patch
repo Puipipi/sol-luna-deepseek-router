@@ -1,6 +1,166 @@
+diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+index c59683d69..f3ce6b01e 100644
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -726,6 +726,7 @@ async fn run_websocket_response_stream(
+         // No request reached the backend, so this socket is still reusable.
+         return Ok(());
+     }
++    let request_bytes = request_text.len();
+     send_websocket_request(
+         ws_stream,
+         request_text,
+@@ -942,9 +943,11 @@ async fn run_websocket_response_stream(
+             Message::Binary(_) => {
+                 return Err(ApiError::Stream("unexpected binary websocket event".into()));
+             }
+-            Message::Close(_) => {
+-                return Err(ApiError::Stream(
+-                    "websocket closed by server before response.completed".into(),
++            Message::Close(frame) => {
++                let close_code = frame.map(|frame| frame.code.to_string());
++                return Err(websocket_closed_before_completed_error(
++                    close_code,
++                    request_bytes,
+                 ));
+             }
+             Message::Frame(_) => {}
+@@ -955,6 +958,16 @@ async fn run_websocket_response_stream(
+     Ok(())
+ }
+ 
++fn websocket_closed_before_completed_error(
++    close_code: Option<String>,
++    request_bytes: usize,
++) -> ApiError {
++    let close_code = close_code.unwrap_or_else(|| "unknown".to_string());
++    ApiError::Stream(format!(
++        "websocket closed by server before response.completed (close_code={close_code} request_bytes={request_bytes})"
++    ))
++}
++
+ fn emit_responses_websocket_timing_event(
+     kind: &str,
+     payload: &str,
+@@ -1113,6 +1126,113 @@ mod tests {
+         assert_eq!(wire_payload, expected_payload);
+     }
+ 
++    async fn run_websocket_message_fixture(
++        messages: Vec<Message>,
++        request_text: &str,
++    ) -> (
++        Result<(), ApiError>,
++        Option<ResponseEvent>,
++        Vec<Result<ResponseEvent, ApiError>>,
++    ) {
++        let (tx_command, mut rx_command) = mpsc::channel::<WsCommand>(1);
++        let (tx_message, rx_message) = mpsc::unbounded_channel();
++        let pump_task = tokio::spawn(async move {
++            let Some(WsCommand::Send { tx_result, .. }) = rx_command.recv().await else {
++                return;
++            };
++            let _ = tx_result.send(Ok(()));
++            for message in messages {
++                if tx_message.send(Ok(message)).is_err() {
++                    break;
++                }
++            }
++        });
++        let mut ws_stream = WsStream {
++            tx_command,
++            rx_message,
++            pump_task,
++        };
++        let (tx_event, mut rx_event) = mpsc::channel(4);
++        let timing_log_context = ResponsesWebsocketTimingLogContext {
++            model: "test".to_string(),
++            session_id: None,
++            thread_id: None,
++            turn_id: None,
++            traceparent: None,
++            previous_response_id: None,
++            request_start_ms: None,
++            warmup: false,
++            connection_reused: false,
++        };
++        let mut completion = None;
++        let result = run_websocket_response_stream(
++            &mut ws_stream,
++            tx_event,
++            request_text.to_string(),
++            Duration::from_secs(1),
++            None,
++            None,
++            &timing_log_context,
++            futures::future::pending::<ResponseInterrupt>(),
++            &mut completion,
++        )
++        .await;
++        let mut events = Vec::new();
++        while let Ok(event) = rx_event.try_recv() {
++            events.push(event);
++        }
++        (result, completion, events)
++    }
++
++    #[tokio::test]
++    async fn premature_websocket_close_reports_code_and_request_size_without_free_text() {
++        let request_text = r#"{"type":"response.create","input":"SENSITIVE_REQUEST_MARKER"}"#;
++        let frame = CloseFrame {
++            code: tungstenite::protocol::frame::coding::CloseCode::from(1009),
++            reason: "SENSITIVE_REASON_MARKER".into(),
++        };
++        let (result, completion, _) = run_websocket_message_fixture(
++            vec![Message::Close(Some(frame))],
++            request_text,
++        )
++        .await;
++        let error = result.expect_err("premature close must fail the Responses stream");
++        let text = error.to_string();
++        assert!(text.contains("websocket closed by server before response.completed"));
++        assert!(text.contains("close_code=1009"));
++        assert!(text.contains(&format!("request_bytes={}", request_text.len())));
++        assert!(!text.contains("SENSITIVE_REASON_MARKER"));
++        assert!(!text.contains("SENSITIVE_REQUEST_MARKER"));
++        assert!(completion.is_none());
++    }
++
++    #[tokio::test]
++    async fn premature_websocket_close_without_frame_keeps_code_unknown() {
++        let (result, completion, _) =
++            run_websocket_message_fixture(vec![Message::Close(None)], "{}")
++                .await;
++        let error = result.expect_err("premature close must fail the Responses stream");
++        assert!(error.to_string().contains("close_code=unknown"));
++        assert!(error.to_string().contains("request_bytes=2"));
++        assert!(completion.is_none());
++    }
++
++    #[tokio::test]
++    async fn response_completed_remains_successful_before_later_close() {
++        let completed = Message::Text(
++            r#"{"type":"response.completed","response":{"id":"resp1","end_turn":false}}"#
++                .into(),
++        );
++        let (result, completion, events) =
++            run_websocket_message_fixture(vec![completed, Message::Close(None)], "{}")
++                .await;
++        assert!(result.is_ok());
++        assert!(completion.is_none());
++        assert!(events
++            .iter()
++            .any(|event| matches!(event, Ok(ResponseEvent::Completed { .. }))));
++    }
++
+     #[test]
+     fn websocket_config_enables_permessage_deflate() {
+         let config = websocket_config();
+diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
+index 34d55118c..c4ade90e2 100644
 --- a/codex-rs/codex-api/src/sse/responses.rs
 +++ b/codex-rs/codex-api/src/sse/responses.rs
-@@ -16,6 +16,7 @@
+@@ -16,6 +16,7 @@ use codex_protocol::models::ResponseItem;
  use codex_protocol::protocol::ModelVerification;
  use codex_protocol::protocol::TokenUsage;
  use codex_protocol::protocol::TurnModerationMetadataEvent;
@@ -8,7 +168,7 @@
  use eventsource_stream::Eventsource;
  use futures::StreamExt;
  use serde::Deserialize;
-@@ -334,6 +335,16 @@
+@@ -334,6 +335,16 @@ pub enum ResponsesEventError {
      Api(ApiError),
  }
  
@@ -25,7 +185,7 @@
  impl ResponsesEventError {
      pub fn into_api_error(self) -> ApiError {
          match self {
-@@ -354,6 +365,7 @@
+@@ -354,6 +365,7 @@ pub fn process_responses_event(
          "response.output_item.done" => {
              if let Some(item_val) = event.item {
                  if let Ok(item) = serde_json::from_value::<ResponseItem>(item_val) {
@@ -33,7 +193,7 @@
                      return Ok(Some(ResponseEvent::OutputItemDone(item)));
                  }
                  debug!("failed to parse ResponseItem from output_item.done");
-@@ -482,6 +494,7 @@
+@@ -482,6 +494,7 @@ pub fn process_responses_event(
          "response.output_item.added" => {
              if let Some(item_val) = event.item {
                  if let Ok(item) = serde_json::from_value::<ResponseItem>(item_val) {
@@ -41,19 +201,23 @@
                      return Ok(Some(ResponseEvent::OutputItemAdded(item)));
                  }
                  debug!("failed to parse ResponseItem from output_item.added");
+diff --git a/codex-rs/core/src/agent/child_config.rs b/codex-rs/core/src/agent/child_config.rs
+index 3d56d7e64..d27fdc647 100644
 --- a/codex-rs/core/src/agent/child_config.rs
 +++ b/codex-rs/core/src/agent/child_config.rs
-@@ -5,6 +5,9 @@
+@@ -5,6 +5,11 @@
  
  use crate::agent::role::DEFAULT_ROLE_NAME;
  use crate::agent::role::apply_role_to_config;
 +use crate::agent::native_deepseek::apply_native_deepseek_child_config;
 +use crate::agent::native_deepseek::NATIVE_DEEPSEEK_MODEL;
 +use crate::agent::native_deepseek::NATIVE_DEEPSEEK_ROLE_NAME;
++use crate::agent::native_deepseek::native_api_profile_hash;
++use crate::agent::native_deepseek::validate_profile_reasoning_effort;
  use crate::config::Config;
  use crate::session::session::Session;
  use crate::session::step_context::StepContext;
-@@ -60,14 +63,17 @@
+@@ -60,14 +65,27 @@ pub(crate) async fn prepare_agent_spawn_config(
      if options.version == SpawnConfigVersion::V1 && options.full_history_fork {
          reject_full_fork_agent_type_override(options.role_name)?;
      }
@@ -66,7 +230,13 @@
 -    )
 -    .await?;
 +    let native_deepseek_role = options.role_name == Some(NATIVE_DEEPSEEK_ROLE_NAME);
-+    if !native_deepseek_role {
++    let native_api_profile_role = options
++        .role_name
++        .map(native_api_profile_hash)
++        .transpose()?
++        .flatten()
++        .is_some();
++    if !native_deepseek_role && !native_api_profile_role {
 +        apply_requested_spawn_agent_model_overrides(
 +            session,
 +            step_context,
@@ -76,32 +246,63 @@
 +        )
 +        .await?;
 +    }
++    if native_api_profile_role {
++        // A profile role's catalog and role file own both the model and its default effort.
++        config.model_reasoning_effort = None;
++    }
      if !options.full_history_fork
          || (options.version == SpawnConfigVersion::V2 && options.role_name.is_some())
      {
-@@ -80,6 +86,18 @@
-                 .developer_instructions
+@@ -81,6 +99,26 @@ pub(crate) async fn prepare_agent_spawn_config(
                  .clone_from(&turn.developer_instructions);
          }
-+    }
+     }
 +    apply_native_deepseek_child_config(
 +        &mut config,
 +        options.role_name,
 +        options.full_history_fork,
 +    )?;
++    if native_api_profile_role {
++        apply_native_api_profile_model_overrides(
++            &mut config,
++            options.role_name.expect("profile role was detected"),
++            options.model,
++            options.reasoning_effort.clone(),
++        )?;
++    }
 +    if native_deepseek_role {
 +        apply_native_deepseek_model_overrides(
 +            &mut config,
 +            options.model,
-+            options.reasoning_effort,
++            options.reasoning_effort.clone(),
 +        )?;
-     }
++    }
      apply_spawn_agent_service_tier(session, &mut config).await?;
      apply_spawn_agent_runtime_overrides(&mut config, turn)?;
-@@ -98,6 +116,45 @@
-         })
-         .map(str::to_owned);
+ 
+@@ -100,6 +138,66 @@ pub(crate) async fn prepare_agent_spawn_config(
      Ok(PreparedSpawnConfig { config, role_name })
+ }
+ 
++fn apply_native_api_profile_model_overrides(
++    config: &mut Config,
++    role_name: &str,
++    requested_model: Option<&str>,
++    requested_reasoning_effort: Option<ReasoningEffort>,
++) -> Result<(), String> {
++    if requested_model.is_some() {
++        return Err(format!(
++            "{role_name} selects its model from its immutable profile; omit the model override"
++        ));
++    }
++    if let Some(effort) = requested_reasoning_effort {
++        let catalog = config.model_catalog.as_ref().ok_or_else(|| {
++            format!("{role_name} profile model catalog is not loaded")
++        })?;
++        validate_profile_reasoning_effort(role_name, catalog, &effort)?;
++        config.model_reasoning_effort = Some(effort);
++    }
++    Ok(())
 +}
 +
 +/// Native DeepSeek roles use their child-only catalog instead of the parent's model manager.
@@ -141,27 +342,161 @@
 +    }
 +
 +    Ok(())
- }
- 
++}
++
  /// Builds the base config snapshot for a newly spawned sub-agent.
+ ///
+ /// The returned config starts from the parent's effective config and then refreshes the
+@@ -264,6 +362,11 @@ pub(crate) async fn apply_spawn_agent_service_tier(
+     session: &Session,
+     config: &mut Config,
+ ) -> Result<(), String> {
++    if config.model_provider_id.starts_with("api-native-") {
++        // A custom API profile must not receive Sol/Luna's OpenAI service tier.
++        config.service_tier = None;
++        return Ok(());
++    }
+     let Some(service_tier) = session.services.agent_control.service_tier() else {
+         config.service_tier = None;
+         return Ok(());
+@@ -293,9 +396,17 @@ async fn apply_spawn_agent_role(
+     config: &mut Config,
+     role_name: Option<&str>,
+ ) -> Result<(), String> {
++    let native_api_profile_role = role_name
++        .map(native_api_profile_hash)
++        .transpose()?
++        .flatten()
++        .is_some();
+     let previous_model = config.model.clone();
+     let previous_reasoning_effort = config.model_reasoning_effort.clone();
+     apply_role_to_config(config, role_name).await?;
++    if native_api_profile_role {
++        return Ok(());
++    }
+     if config.model == previous_model && config.model_reasoning_effort == previous_reasoning_effort
+     {
+         return Ok(());
+@@ -371,3 +482,57 @@ fn validate_spawn_agent_reasoning_effort(
+         "Reasoning effort `{requested_reasoning_effort}` is not supported for model `{model}`. Supported reasoning efforts: {supported}"
+     ))
+ }
++
++#[cfg(test)]
++mod native_api_profile_override_tests {
++    use super::apply_native_api_profile_model_overrides;
++    use crate::config::ConfigBuilder;
++    use codex_models_manager::model_info::model_info_from_slug;
++    use codex_protocol::openai_models::ModelsResponse;
++    use codex_protocol::openai_models::ReasoningEffort;
++    use codex_protocol::openai_models::ReasoningEffortPreset;
++
++    #[tokio::test]
++    async fn native_api_profile_rejects_model_override_and_validates_effort_against_catalog() {
++        let config_home = tempfile::TempDir::new().expect("create Codex home");
++        let mut config = ConfigBuilder::default()
++            .codex_home(config_home.path().to_path_buf())
++            .fallback_cwd(Some(config_home.path().to_path_buf()))
++            .build()
++            .await
++            .expect("build test config");
++        let mut model = model_info_from_slug("vendor/custom-model");
++        model.supported_reasoning_levels = vec![ReasoningEffortPreset {
++            effort: ReasoningEffort::High,
++            description: "High effort".to_string(),
++        }];
++        config.model_catalog = Some(ModelsResponse { models: vec![model] });
++
++        let model_error = apply_native_api_profile_model_overrides(
++            &mut config,
++            "native_api_0123456789abcdef01234567",
++            Some("different-model"),
++            None,
++        )
++        .expect_err("profile roles must reject explicit model overrides");
++        assert!(model_error.contains("omit the model override"));
++
++        apply_native_api_profile_model_overrides(
++            &mut config,
++            "native_api_0123456789abcdef01234567",
++            None,
++            Some(ReasoningEffort::High),
++        )
++        .expect("catalog-supported effort should be accepted");
++        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
++
++        let effort_error = apply_native_api_profile_model_overrides(
++            &mut config,
++            "native_api_0123456789abcdef01234567",
++            None,
++            Some(ReasoningEffort::XHigh),
++        )
++        .expect_err("unsupported profile effort must be rejected");
++        assert!(effort_error.contains("not supported"));
++    }
++}
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index 22cd72560..82f2635dc 100644
 --- a/codex-rs/core/src/agent/control/spawn.rs
 +++ b/codex-rs/core/src/agent/control/spawn.rs
-@@ -4,6 +4,8 @@
+@@ -4,6 +4,9 @@ use super::spawn_telemetry::SpawnMeasurements;
  use super::spawn_telemetry::record_spawn_success;
  use super::*;
  use crate::agent::child_config::build_agent_resume_config;
 +use crate::agent::native_deepseek::apply_native_deepseek_child_config;
 +use crate::agent::native_deepseek::NATIVE_DEEPSEEK_PROVIDER_ID;
++use crate::agent::native_deepseek::native_api_profile_hash;
  use crate::agent::role::apply_role_to_config;
  use crate::agent::types::AgentMetadata;
  use crate::agent::types::LiveAgent;
-@@ -465,7 +467,15 @@
+@@ -195,6 +198,26 @@ async fn load_agent_model_context(
+     }
+ }
+ 
++/// Rejects a stored provider/role combination that would silently switch provider on reload.
++/// `None` keeps the legacy sender-driven reload semantics for old DS sessions.
++fn validate_native_resume_role_provider(
++    stored_model_provider: &str,
++    role_name: Option<&str>,
++) -> Result<(), String> {
++    if stored_model_provider != NATIVE_DEEPSEEK_PROVIDER_ID {
++        return Ok(());
++    }
++    let Some(role_name) = role_name else {
++        return Ok(());
++    };
++    if native_api_profile_hash(role_name)?.is_some() {
++        return Err(format!(
++            "stored native provider `{stored_model_provider}` does not match role `{role_name}`"
++        ));
++    }
++    Ok(())
++}
++
+ impl LocalAgentControl {
+     /// Restore persisted V2 agent identities without reopening their runtimes.
+     pub(crate) async fn restore_v2_agent_metadata(
+@@ -427,7 +450,7 @@ impl LocalAgentControl {
+         } else {
+             None
+         };
+-        config.model_reasoning_effort = stored_reasoning_effort;
++        config.model_reasoning_effort = stored_reasoning_effort.clone();
+         if let Some(role_name) = session_source.get_agent_role() {
+             let runtime_approval_policy = config.permissions.approval_policy.value();
+             let runtime_approvals_reviewer = config.approvals_reviewer;
+@@ -478,7 +501,49 @@ impl LocalAgentControl {
                          "Model provider `{stored_model_provider}` not found"
                      ))
                  })?;
 -            config.model_provider_id = stored_model_provider;
 +            config.model_provider_id = stored_model_provider.clone();
 +        }
++        validate_native_resume_role_provider(
++            &stored_model_provider,
++            session_source.get_agent_role().as_deref(),
++        )
++        .map_err(CodexErr::InvalidRequest)?;
 +        if stored_model_provider == NATIVE_DEEPSEEK_PROVIDER_ID {
 +            apply_native_deepseek_child_config(
 +                &mut config,
@@ -169,12 +504,738 @@
 +                /*full_history_fork*/ false,
 +            )
 +            .map_err(CodexErr::InvalidRequest)?;
++        } else if stored_model_provider.starts_with("api-native-") {
++            let role_name = session_source.get_agent_role().ok_or_else(|| {
++                CodexErr::InvalidRequest(
++                    "native API child is missing its stored profile role".to_string(),
++                )
++            })?;
++            let profile_hash = native_api_profile_hash(&role_name)
++                .map_err(CodexErr::InvalidRequest)?
++                .ok_or_else(|| {
++                    CodexErr::InvalidRequest(format!(
++                        "stored native API provider `{stored_model_provider}` does not match a profile role"
++                    ))
++                })?;
++            let expected_provider = format!("api-native-{profile_hash}");
++            if stored_model_provider != expected_provider {
++                return Err(CodexErr::InvalidRequest(format!(
++                    "stored native API provider `{stored_model_provider}` does not match role `{role_name}`"
++                )));
++            }
++            // The role file may change, but a restored child keeps the effort it actually used.
++            // Reapply it before loading the profile catalog so that catalog validation covers it.
++            config.model_reasoning_effort = stored_reasoning_effort.clone();
++            config.service_tier = None;
++            apply_native_deepseek_child_config(
++                &mut config,
++                Some(&role_name),
++                /*full_history_fork*/ false,
++            )
++            .map_err(CodexErr::InvalidRequest)?;
          }
          let parent_thread_id = owner_thread_id
              .or_else(|| initial_history.get_resumed_parent_thread_id())
+@@ -1576,3 +1641,40 @@ impl LocalAgentControl {
+         Ok((resumed_thread.thread_id, multi_agent_version))
+     }
+ }
++
++
++#[cfg(test)]
++mod native_api_resume_tests {
++    use super::validate_native_resume_role_provider;
++    use super::NATIVE_DEEPSEEK_PROVIDER_ID;
++
++    #[test]
++    fn native_api_resume_rejects_deepseek_provider_role_mismatch() {
++        let api_role = "native_api_0123456789abcdef01234567";
++
++        assert!(validate_native_resume_role_provider(
++            NATIVE_DEEPSEEK_PROVIDER_ID,
++            Some("native_deepseek")
++        )
++        .is_ok());
++        assert!(validate_native_resume_role_provider(NATIVE_DEEPSEEK_PROVIDER_ID, None).is_ok());
++        assert!(validate_native_resume_role_provider(
++            NATIVE_DEEPSEEK_PROVIDER_ID,
++            Some("worker")
++        )
++        .is_ok());
++
++        let error = validate_native_resume_role_provider(
++            NATIVE_DEEPSEEK_PROVIDER_ID,
++            Some(api_role),
++        )
++        .expect_err("DeepSeek provider with an API profile role must be rejected");
++        assert!(error.contains("does not match role"));
++
++        assert!(validate_native_resume_role_provider(
++            "api-native-0123456789abcdef01234567",
++            Some(api_role)
++        )
++        .is_ok());
++    }
++}
+diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
+index 59027230a..7dba6a6c3 100644
+--- a/codex-rs/core/src/agent/control_tests.rs
++++ b/codex-rs/core/src/agent/control_tests.rs
+@@ -3,6 +3,10 @@ use crate::CodexThread;
+ use crate::StateDbHandle;
+ use crate::ThreadManager;
+ use crate::agent::agent_status_from_event;
++use crate::agent::child_config::SpawnConfigOptions;
++use crate::agent::child_config::SpawnConfigVersion;
++use crate::agent::child_config::prepare_agent_spawn_config;
++use crate::agent::native_deepseek::apply_native_deepseek_child_config;
+ use crate::agent::api::AgentControl;
+ use crate::agent::api::AgentInfo;
+ use crate::agent::api::AgentInput;
+@@ -21,6 +25,7 @@ use crate::agent_communication::AgentCommunicationKind;
+ use crate::config::AgentRoleConfig;
+ use crate::config::Config;
+ use crate::config::ConfigBuilder;
++use crate::config::Constrained;
+ use crate::context::BaseInstructionsFragment;
+ use crate::context::ContextualUserFragment;
+ use crate::context::ManagedDeveloperInstructions;
+@@ -43,13 +48,15 @@ use codex_extension_api::LoadedUserInstructions;
+ use codex_extension_api::ThreadInstructionsProvider;
+ use codex_extension_api::empty_extension_registry;
+ use codex_features::Feature;
++use codex_model_provider_info::ModelProviderInfo;
++use codex_model_provider_info::WireApi;
++use codex_models_manager::model_info::model_info_from_slug;
+ use codex_history::CompactedItem;
+ use codex_history::InitialHistory;
+ use codex_history::ResumedHistory;
+ use codex_history::RolloutItem;
+ use codex_login::AuthManager;
+ use codex_login::CodexAuth;
+-use codex_models_manager::model_info::model_info_from_slug;
+ use codex_protocol::AgentPath;
+ use codex_protocol::ResponseItemId;
+ use codex_protocol::capabilities::CapabilityRootLocation;
+@@ -59,6 +66,7 @@ use codex_protocol::config_types::CollaborationMode;
+ use codex_protocol::config_types::ModeKind;
+ use codex_protocol::config_types::ReasoningSummary;
+ use codex_protocol::config_types::Settings;
++use codex_protocol::config_types::WebSearchMode;
+ use codex_protocol::error::AgentErrorContext;
+ use codex_protocol::error::CodexErrKind;
+ use codex_protocol::error::CodexErrorDetails;
+@@ -79,6 +87,7 @@ use codex_protocol::models::PermissionProfile;
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::openai_models::ModelsResponse;
+ use codex_protocol::openai_models::ReasoningEffort;
++use codex_protocol::openai_models::ReasoningEffortPreset;
+ use codex_protocol::protocol::AskForApproval;
+ use codex_protocol::protocol::EnvironmentConfigState;
+ use codex_protocol::protocol::ErrorEvent;
+@@ -1222,17 +1231,18 @@ enum V2ReloadRoute {
+     NestedParent,
+ }
+ 
+-async fn spawn_v2_reload_test_child(
++async fn spawn_v2_reload_test_child_with_role(
+     control: &LocalAgentControl,
+     config: Config,
+     parent: &CodexThread,
+     task_name: &str,
++    agent_role: Option<&str>,
+ ) -> LiveAgent {
+     let source = thread_spawn_source(
+         parent.session.thread_id,
+         &parent.session_source,
+         next_thread_spawn_depth(&parent.session_source),
+-        /*agent_role*/ None,
++        agent_role,
+         Some(task_name.to_string()),
+     )
+     .expect("child source");
+@@ -1250,6 +1260,16 @@ async fn spawn_v2_reload_test_child(
+         .expect("spawn_agent should succeed")
+ }
+ 
++async fn spawn_v2_reload_test_child(
++    control: &LocalAgentControl,
++    config: Config,
++    parent: &CodexThread,
++    task_name: &str,
++) -> LiveAgent {
++    spawn_v2_reload_test_child_with_role(control, config, parent, task_name, /*agent_role*/ None)
++        .await
++}
++
+ async fn check_v2_agent_reload(route: V2ReloadRoute) {
+     let (home, mut config) = test_config().await;
+     let _ = config.features.enable(Feature::MultiAgentV2);
+@@ -6125,3 +6145,559 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails()
+         .await
+         .expect("tree shutdown after partial subtree resume should succeed");
+ }
++
++
++const NATIVE_API_HASH: &str = "0123456789abcdef01234567";
++const NATIVE_API_MODEL: &str = "vendor/custom-model";
++
++fn native_api_role() -> String {
++    format!("native_api_{NATIVE_API_HASH}")
++}
++
++fn native_api_provider_id() -> String {
++    format!("api-native-{NATIVE_API_HASH}")
++}
++
++fn native_api_base_url() -> String {
++    format!("http://127.0.0.1:43210/token/profiles/{NATIVE_API_HASH}/v1")
++}
++
++fn write_native_api_role(
++    path: &std::path::Path,
++    role: &str,
++    model: &str,
++    effort: Option<&str>,
++) {
++    let mut contents = format!("name = {role:?}\nmodel = {model:?}\n");
++    if let Some(effort) = effort {
++        contents.push_str(&format!("model_reasoning_effort = {effort:?}\n"));
++    }
++    contents.push_str("\n[features]\nunbounded_connection_retries = false\n");
++    std::fs::write(path, contents).expect("write native API role");
++}
++
++fn configure_native_api_profile(
++    home: &TempDir,
++    config: &mut Config,
++    role_model: &str,
++    role_effort: Option<&str>,
++    reasoning_supported: bool,
++) -> (String, String, ModelsResponse, ModelProviderInfo) {
++    let role = native_api_role();
++    let provider_id = native_api_provider_id();
++    let role_dir = home.path().join("agents");
++    std::fs::create_dir_all(&role_dir).expect("create native API role dir");
++    let role_path = role_dir.join(format!("{role}.toml"));
++    write_native_api_role(&role_path, &role, role_model, role_effort);
++    config.agent_roles.insert(
++        role.clone(),
++        AgentRoleConfig {
++            description: Some("Native API test role".to_string()),
++            config_file: Some(role_path),
++            nickname_candidates: None,
++        },
++    );
++
++    let mut model = model_info_from_slug(NATIVE_API_MODEL);
++    if reasoning_supported {
++        model.supported_reasoning_levels = vec![
++            ReasoningEffortPreset {
++                effort: ReasoningEffort::Low,
++                description: "Low effort".to_string(),
++            },
++            ReasoningEffortPreset {
++                effort: ReasoningEffort::Medium,
++                description: "Medium effort".to_string(),
++            },
++            ReasoningEffortPreset {
++                effort: ReasoningEffort::High,
++                description: "High effort".to_string(),
++            },
++        ];
++        model.default_reasoning_level = Some(ReasoningEffort::Medium);
++    } else {
++        model.supported_reasoning_levels = Vec::new();
++        model.default_reasoning_level = None;
++        model.multi_agent_reasoning_effort = None;
++    }
++    model.context_window = Some(64_000);
++    model.max_context_window = Some(64_000);
++    let catalog = ModelsResponse { models: vec![model] };
++    std::fs::write(
++        home.path()
++            .join(format!("sol-luna-native-models-{NATIVE_API_HASH}.json")),
++        serde_json::to_vec(&catalog).expect("serialize native API catalog"),
++    )
++    .expect("write native API catalog");
++
++    let mut provider = ModelProviderInfo::default();
++    provider.name = "Native API test provider".to_string();
++    provider.base_url = Some(native_api_base_url());
++    provider.wire_api = WireApi::Responses;
++    provider.requires_openai_auth = false;
++    provider.supports_websockets = false;
++    config
++        .model_providers
++        .insert(provider_id.clone(), provider.clone());
++
++    (role, provider_id, catalog, provider)
++}
++
++#[test]
++fn native_api_prepare_agent_spawn_config_resets_effort_and_service_tier() -> anyhow::Result<()> {
++    core_test_support::test_codex::run_test_with_large_stack(
++        "native_api_prepare_agent_spawn_config_resets_effort_and_service_tier",
++        native_api_prepare_agent_spawn_config_resets_effort_and_service_tier_impl,
++    )
++}
++
++async fn native_api_prepare_agent_spawn_config_resets_effort_and_service_tier_impl() -> anyhow::Result<()> {
++    let (home, mut config) = test_config().await;
++    let _ = config.features.enable(Feature::MultiAgentV2);
++    config.model = Some("gpt-5.6-sol".to_string());
++    config.model_reasoning_effort = Some(ReasoningEffort::XHigh);
++    config.service_tier = Some("flex".to_string());
++    config.web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
++    let (role, provider_id, _catalog, provider) =
++        configure_native_api_profile(&home, &mut config, NATIVE_API_MODEL, Some("medium"), true);
++    let harness = AgentControlHarness::new_with_config(home, config.clone()).await;
++    let (_root_id, thread) = harness.start_thread().await;
++    let root_before = thread.session.get_config().await;
++    assert_eq!(root_before.service_tier.as_deref(), Some("flex"));
++    assert_eq!(root_before.web_search_mode.value(), WebSearchMode::Cached);
++    let turn = thread.session.new_default_turn().await;
++    let step_context = StepContext::for_test(Arc::clone(&turn));
++
++    let requested = prepare_agent_spawn_config(
++        thread.session.as_ref(),
++        &step_context,
++        SpawnConfigOptions {
++            version: SpawnConfigVersion::V2,
++            full_history_fork: false,
++            role_name: Some(&role),
++            model: None,
++            reasoning_effort: Some(ReasoningEffort::High),
++        },
++    )
++    .await
++    .expect("native API profile spawn config should prepare");
++    assert_eq!(requested.role_name.as_deref(), Some(role.as_str()));
++    assert_eq!(requested.config.model.as_deref(), Some(NATIVE_API_MODEL));
++    assert_eq!(requested.config.model_provider_id, provider_id);
++    assert_eq!(requested.config.model_provider, provider);
++    assert_eq!(
++        requested.config.model_reasoning_effort,
++        Some(ReasoningEffort::High)
++    );
++    assert_eq!(requested.config.service_tier, None);
++    assert_eq!(
++        requested.config.web_search_mode.value(),
++        WebSearchMode::Disabled
++    );
++    assert_eq!(
++        requested.config.model_catalog.as_ref().unwrap().models[0].slug,
++        NATIVE_API_MODEL
++    );
++
++    let role_default = prepare_agent_spawn_config(
++        thread.session.as_ref(),
++        &step_context,
++        SpawnConfigOptions {
++            version: SpawnConfigVersion::V2,
++            full_history_fork: false,
++            role_name: Some(&role),
++            model: None,
++            reasoning_effort: None,
++        },
++    )
++    .await
++    .expect("role default effort should prepare");
++    assert_eq!(
++        role_default.config.model_reasoning_effort,
++        Some(ReasoningEffort::Medium)
++    );
++    assert_eq!(role_default.config.service_tier, None);
++    assert_eq!(
++        role_default.config.web_search_mode.value(),
++        WebSearchMode::Disabled
++    );
++
++    let model_error = prepare_agent_spawn_config(
++        thread.session.as_ref(),
++        &step_context,
++        SpawnConfigOptions {
++            version: SpawnConfigVersion::V2,
++            full_history_fork: false,
++            role_name: Some(&role),
++            model: Some("different-model"),
++            reasoning_effort: None,
++        },
++    )
++    .await
++    .err()
++    .expect("native API profile model override must fail");
++    assert!(model_error.contains("omit the model override"));
++
++    let effort_error = prepare_agent_spawn_config(
++        thread.session.as_ref(),
++        &step_context,
++        SpawnConfigOptions {
++            version: SpawnConfigVersion::V2,
++            full_history_fork: false,
++            role_name: Some(&role),
++            model: None,
++            reasoning_effort: Some(ReasoningEffort::Ultra),
++        },
++    )
++    .await
++    .err()
++    .expect("unsupported native API effort must fail");
++    assert!(effort_error.contains("not supported"));
++
++    let root_after = thread.session.get_config().await;
++    assert_eq!(root_after.model.as_deref(), root_before.model.as_deref());
++    assert_eq!(root_after.model_provider_id, root_before.model_provider_id);
++    assert_eq!(
++        root_after.model_reasoning_effort,
++        root_before.model_reasoning_effort
++    );
++    assert_eq!(root_after.service_tier, root_before.service_tier);
++    assert_eq!(root_after.web_search_mode.value(), WebSearchMode::Cached);
++    Ok(())
++}
++
++#[test]
++fn native_api_cold_resume_keeps_stored_profile_and_clears_sender_service_tier() -> anyhow::Result<()> {
++    core_test_support::test_codex::run_test_with_large_stack(
++        "native_api_cold_resume_keeps_stored_profile_and_clears_sender_service_tier",
++        native_api_cold_resume_keeps_stored_profile_and_clears_sender_service_tier_impl,
++    )
++}
++
++async fn native_api_cold_resume_keeps_stored_profile_and_clears_sender_service_tier_impl() -> anyhow::Result<()> {
++    let (home, mut config) = test_config().await;
++    let _ = config.features.enable(Feature::MultiAgentV2);
++    let _ = config.features.enable(Feature::Sqlite);
++    config.model = Some("gpt-5.6-sol".to_string());
++    config.model_reasoning_effort = Some(ReasoningEffort::XHigh);
++    config.service_tier = Some("flex".to_string());
++    config.web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
++    config.multi_agent_v2.max_concurrent_threads_per_session = 3;
++    config.permissions.allow_login_shell = true;
++    config
++        .permissions
++        .set_permission_profile(PermissionProfile::read_only())
++        .expect("read-only parent profile");
++    let (role, provider_id, catalog, provider) =
++        configure_native_api_profile(&home, &mut config, NATIVE_API_MODEL, Some("medium"), true);
++    let home_path = home.path().to_path_buf();
++    let harness = AgentControlHarness::new_with_config(home, config.clone()).await;
++    let (_root_id, root_thread) = harness.start_paginated_thread().await;
++    let root_before = root_thread.session.get_config().await;
++    assert_eq!(root_before.service_tier.as_deref(), Some("flex"));
++    assert_eq!(root_before.web_search_mode.value(), WebSearchMode::Cached);
++    let control = root_thread
++        .session
++        .services
++        .local_agent_runtime
++        .control(root_thread.session.session_id());
++
++    let mut child_config = config.clone();
++    child_config.model = Some(NATIVE_API_MODEL.to_string());
++    child_config.model_provider_id = provider_id.clone();
++    child_config.model_provider = provider.clone();
++    child_config.model_catalog = Some(catalog.clone());
++    child_config.model_reasoning_effort = Some(ReasoningEffort::High);
++    child_config.service_tier = Some("flex".to_string());
++    let child = spawn_v2_reload_test_child_with_role(
++        &control,
++        child_config,
++        &root_thread,
++        "worker",
++        Some(&role),
++    )
++    .await;
++    let child_id = child.thread_id;
++    let child_thread = harness
++        .manager
++        .get_thread(child_id)
++        .await
++        .expect("child thread should exist");
++    persist_thread_for_tree_resume(&child_thread, "native API child persisted").await;
++    let stored = child_thread
++        .read_thread(/*include_archived*/ true, /*include_history*/ false)
++        .await
++        .expect("child metadata should be readable");
++    assert_eq!(stored.model.as_deref(), Some(NATIVE_API_MODEL));
++    assert_eq!(stored.model_provider, provider_id);
++    assert_eq!(stored.reasoning_effort, Some(ReasoningEffort::High));
++    child_thread
++        .shutdown_and_wait()
++        .await
++        .expect("child thread should shut down");
++    assert!(harness.manager.remove_thread(&child_id).await.is_some());
++
++    // Changing the role file after spawn must not rewrite the old child's model or effort.
++    write_native_api_role(
++        &home_path.join("agents").join(format!("{role}.toml")),
++        &role,
++        "vendor/role-default-changed",
++        Some("low"),
++    );
++
++    let mut sender_config = config.clone();
++    sender_config.model = Some("gpt-5.6-sol".to_string());
++    sender_config.model_provider_id = "openai".to_string();
++    sender_config.model_provider = sender_config
++        .model_providers
++        .get("openai")
++        .cloned()
++        .expect("openai provider should exist");
++    sender_config.model_reasoning_effort = Some(ReasoningEffort::XHigh);
++    sender_config.service_tier = Some("flex".to_string());
++    let _pin = Box::pin(control.ensure_v2_agent_loaded(
++        sender_config, child_id, /*parent*/ None,
++    ))
++    .await
++    .expect("stored native API child should reload");
++
++    let resumed = harness
++        .manager
++        .get_thread(child_id)
++        .await
++        .expect("resumed child should exist");
++    let resumed_config = resumed.session.get_config().await;
++    let expected_base_url = native_api_base_url();
++    assert_eq!(resumed_config.model.as_deref(), Some(NATIVE_API_MODEL));
++    assert_eq!(resumed_config.model_provider_id, provider_id);
++    assert_eq!(
++        resumed_config.model_provider.base_url.as_deref(),
++        Some(expected_base_url.as_str())
++    );
++    assert_eq!(
++        resumed_config.model_reasoning_effort,
++        Some(ReasoningEffort::High)
++    );
++    assert_eq!(resumed_config.service_tier, None);
++    assert_eq!(
++        resumed_config.web_search_mode.value(),
++        WebSearchMode::Disabled
++    );
++    assert_eq!(
++        resumed_config.model_catalog.as_ref().unwrap().models[0].slug,
++        NATIVE_API_MODEL
++    );
++    assert_eq!(
++        resumed.session_source.get_agent_role().as_deref(),
++        Some(role.as_str())
++    );
++
++    let root_after = root_thread.session.get_config().await;
++    assert_eq!(root_after.model.as_deref(), root_before.model.as_deref());
++    assert_eq!(root_after.model_provider_id, root_before.model_provider_id);
++    assert_eq!(
++        root_after.model_reasoning_effort,
++        root_before.model_reasoning_effort
++    );
++    assert_eq!(root_after.service_tier, root_before.service_tier);
++    assert_eq!(root_after.web_search_mode.value(), WebSearchMode::Cached);
++    Ok(())
++}
++
++
++#[test]
++fn native_api_none_reasoning_profile_clears_parent_effort() -> anyhow::Result<()> {
++    core_test_support::test_codex::run_test_with_large_stack(
++        "native_api_none_reasoning_profile_clears_parent_effort",
++        native_api_none_reasoning_profile_clears_parent_effort_impl,
++    )
++}
++
++async fn native_api_none_reasoning_profile_clears_parent_effort_impl() -> anyhow::Result<()> {
++    let (home, mut config) = test_config().await;
++    let _ = config.features.enable(Feature::MultiAgentV2);
++    config.model = Some("gpt-5.6-sol".to_string());
++    config.model_reasoning_effort = Some(ReasoningEffort::XHigh);
++    config.service_tier = Some("flex".to_string());
++    config.web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
++    let (role, provider_id, _catalog, _provider) =
++        configure_native_api_profile(&home, &mut config, NATIVE_API_MODEL, None, false);
++    let harness = AgentControlHarness::new_with_config(home, config.clone()).await;
++    let (_root_id, thread) = harness.start_thread().await;
++    let root_before = thread.session.get_config().await;
++    assert_eq!(
++        root_before.model_reasoning_effort,
++        Some(ReasoningEffort::XHigh)
++    );
++    let turn = thread.session.new_default_turn().await;
++    let step_context = StepContext::for_test(Arc::clone(&turn));
++
++    let prepared = prepare_agent_spawn_config(
++        thread.session.as_ref(),
++        &step_context,
++        SpawnConfigOptions {
++            version: SpawnConfigVersion::V2,
++            full_history_fork: false,
++            role_name: Some(&role),
++            model: None,
++            reasoning_effort: None,
++        },
++    )
++    .await
++    .expect("non-reasoning profile must clear parent effort");
++    assert_eq!(prepared.config.model_reasoning_effort, None);
++    assert_eq!(prepared.config.model_provider_id, provider_id);
++    assert_eq!(prepared.config.service_tier, None);
++    assert_eq!(
++        prepared.config.web_search_mode.value(),
++        WebSearchMode::Disabled
++    );
++
++    let effort_error = prepare_agent_spawn_config(
++        thread.session.as_ref(),
++        &step_context,
++        SpawnConfigOptions {
++            version: SpawnConfigVersion::V2,
++            full_history_fork: false,
++            role_name: Some(&role),
++            model: None,
++            reasoning_effort: Some(ReasoningEffort::High),
++        },
++    )
++    .await
++    .err()
++    .expect("non-reasoning profile must reject an explicit effort");
++    assert!(effort_error.contains("not supported"));
++
++    // Cold resume calls the same child configuration layer with the stored effort.
++    let mut cold_config = prepared.config.clone();
++    cold_config.model_reasoning_effort = Some(ReasoningEffort::XHigh);
++    apply_native_deepseek_child_config(&mut cold_config, Some(&role), false)
++        .expect("non-reasoning catalog must clear stale stored effort");
++    assert_eq!(cold_config.model_reasoning_effort, None);
++    assert_eq!(cold_config.model_provider_id, provider_id);
++
++    let root_after = thread.session.get_config().await;
++    assert_eq!(
++        root_after.model_reasoning_effort,
++        Some(ReasoningEffort::XHigh)
++    );
++    Ok(())
++}
++
++
++#[test]
++fn native_api_none_reasoning_cold_resume_keeps_effort_empty() -> anyhow::Result<()> {
++    core_test_support::test_codex::run_test_with_large_stack(
++        "native_api_none_reasoning_cold_resume_keeps_effort_empty",
++        native_api_none_reasoning_cold_resume_keeps_effort_empty_impl,
++    )
++}
++
++async fn native_api_none_reasoning_cold_resume_keeps_effort_empty_impl() -> anyhow::Result<()> {
++    let (home, mut config) = test_config().await;
++    let _ = config.features.enable(Feature::MultiAgentV2);
++    let _ = config.features.enable(Feature::Sqlite);
++    config.model = Some("gpt-5.6-sol".to_string());
++    config.model_reasoning_effort = Some(ReasoningEffort::XHigh);
++    config.service_tier = Some("flex".to_string());
++    config.web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
++    config.multi_agent_v2.max_concurrent_threads_per_session = 3;
++    config.permissions.allow_login_shell = true;
++    config
++        .permissions
++        .set_permission_profile(PermissionProfile::read_only())
++        .expect("read-only parent profile");
++    let (role, provider_id, catalog, provider) =
++        configure_native_api_profile(&home, &mut config, NATIVE_API_MODEL, None, false);
++    let harness = AgentControlHarness::new_with_config(home, config.clone()).await;
++    let (_root_id, root_thread) = harness.start_paginated_thread().await;
++    let root_before = root_thread.session.get_config().await;
++    let control = root_thread
++        .session
++        .services
++        .local_agent_runtime
++        .control(root_thread.session.session_id());
++
++    let mut child_config = config.clone();
++    child_config.model = Some(NATIVE_API_MODEL.to_string());
++    child_config.model_provider_id = provider_id.clone();
++    child_config.model_provider = provider.clone();
++    child_config.model_catalog = Some(catalog.clone());
++    // Simulate an old child that still carried the Sol parent's effort.
++    child_config.model_reasoning_effort = Some(ReasoningEffort::XHigh);
++    child_config.service_tier = Some("flex".to_string());
++    let child = spawn_v2_reload_test_child_with_role(
++        &control,
++        child_config,
++        &root_thread,
++        "non_reasoning_worker",
++        Some(&role),
++    )
++    .await;
++    let child_id = child.thread_id;
++    let child_thread = harness
++        .manager
++        .get_thread(child_id)
++        .await
++        .expect("child thread should exist");
++    persist_thread_for_tree_resume(
++        &child_thread,
++        "native API non-reasoning child persisted",
++    )
++    .await;
++    let stored = child_thread
++        .read_thread(/*include_archived*/ true, /*include_history*/ false)
++        .await
++        .expect("child metadata should be readable");
++    assert_eq!(stored.model.as_deref(), Some(NATIVE_API_MODEL));
++    assert_eq!(stored.model_provider, provider_id);
++    child_thread
++        .shutdown_and_wait()
++        .await
++        .expect("child thread should shut down");
++    assert!(harness.manager.remove_thread(&child_id).await.is_some());
++
++    let mut sender_config = config.clone();
++    sender_config.model = Some("gpt-5.6-sol".to_string());
++    sender_config.model_provider_id = "openai".to_string();
++    sender_config.model_provider = sender_config
++        .model_providers
++        .get("openai")
++        .cloned()
++        .expect("openai provider should exist");
++    sender_config.model_reasoning_effort = Some(ReasoningEffort::XHigh);
++    sender_config.service_tier = Some("flex".to_string());
++    let _pin = Box::pin(control.ensure_v2_agent_loaded(
++        sender_config, child_id, /*parent*/ None,
++    ))
++    .await
++    .expect("non-reasoning API child should reload without an effort");
++
++    let resumed = harness
++        .manager
++        .get_thread(child_id)
++        .await
++        .expect("resumed child should exist");
++    let resumed_config = resumed.session.get_config().await;
++    assert_eq!(resumed_config.model_reasoning_effort, None);
++    assert_eq!(resumed_config.model.as_deref(), Some(NATIVE_API_MODEL));
++    assert_eq!(resumed_config.model_provider_id, provider_id);
++    assert_eq!(resumed_config.service_tier, None);
++    assert_eq!(
++        resumed_config.web_search_mode.value(),
++        WebSearchMode::Disabled
++    );
++    assert_eq!(
++        resumed.session_source.get_agent_role().as_deref(),
++        Some(role.as_str())
++    );
++
++    let root_after = root_thread.session.get_config().await;
++    assert_eq!(
++        root_after.model_reasoning_effort,
++        Some(ReasoningEffort::XHigh)
++    );
++    assert_eq!(root_after.service_tier, root_before.service_tier);
++    Ok(())
++}
+diff --git a/codex-rs/core/src/agent/mod.rs b/codex-rs/core/src/agent/mod.rs
+index c9a154799..a602cdbf8 100644
 --- a/codex-rs/core/src/agent/mod.rs
 +++ b/codex-rs/core/src/agent/mod.rs
-@@ -2,6 +2,7 @@
+@@ -2,6 +2,7 @@ pub(crate) mod agent_resolver;
  pub(crate) mod api;
  pub(crate) mod child_config;
  pub(crate) mod control;
@@ -182,83 +1243,38 @@
  mod registry;
  pub(crate) mod role;
  pub(crate) mod status;
---- a/codex-rs/core/src/client.rs
-+++ b/codex-rs/core/src/client.rs
-@@ -88,6 +88,7 @@
- use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
- use codex_protocol::config_types::Verbosity as VerbosityConfig;
- use codex_protocol::models::ResponseItem;
-+use codex_protocol::sol_luna_wire_aliases;
- use codex_protocol::openai_models::ModelInfo;
- use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
- use codex_protocol::protocol::AuthRecoveryEvent;
-@@ -979,7 +980,14 @@
-         let mut prefix = Vec::new();
-         let tools = if model_info.use_responses_lite {
-             if !prompt.tools.is_empty() {
--                let tools = create_tools_json_for_responses_lite(&prompt.tools)?;
-+                let mut tools = create_tools_json_for_responses_lite(&prompt.tools)?;
-+                if sol_luna_wire_aliases::enabled() {
-+                    let encoded = sol_luna_wire_aliases::encode_tools_json(
-+                        serde_json::Value::Array(tools),
-+                    )
-+                    .map_err(CodexErr::Fatal)?;
-+                    tools = encoded.as_array().cloned().unwrap_or_default();
-+                }
-                 prefix.push(ResponseItem::AdditionalTools {
-                     id: Some(ResponseItemId::with_suffix(
-                         "at",
-@@ -991,7 +999,17 @@
-             }
-             None
-         } else {
--            Some(create_tools_raw_json_for_responses_api(&prompt.tools)?.into())
-+            let raw_tools = create_tools_raw_json_for_responses_api(&prompt.tools)?;
-+            if sol_luna_wire_aliases::enabled() {
-+                let tools = serde_json::from_str(raw_tools.get())?;
-+                let encoded = sol_luna_wire_aliases::encode_tools_json(tools)
-+                    .map_err(CodexErr::Fatal)?;
-+                let raw_tools: Arc<serde_json::value::RawValue> =
-+                    Arc::from(serde_json::value::to_raw_value(&encoded)?);
-+                Some(raw_tools.into())
-+            } else {
-+                Some(raw_tools.into())
-+            }
-         };
-         if !prompt.base_instructions.text.is_empty() {
-             let mut instructions = ContextualUserFragment::into(BaseInstructionsFragment(
-@@ -1066,6 +1084,11 @@
-         if !include_internal {
-             for item in &mut input {
-                 item.clear_tool_result_metadata();
-+            }
-+        }
-+        if sol_luna_wire_aliases::enabled() {
-+            for item in &mut input {
-+                sol_luna_wire_aliases::encode_response_item(item).map_err(CodexErr::Fatal)?;
-             }
-         }
-         let client_metadata = responses_metadata.client_metadata(include_internal);
---- a/codex-rs/protocol/src/lib.rs
-+++ b/codex-rs/protocol/src/lib.rs
-@@ -54,5 +54,6 @@
- pub mod sandbox;
- pub mod security_risk;
- pub mod shell_environment;
-+pub mod sol_luna_wire_aliases;
- pub mod turn_input;
- pub mod user_input;
+diff --git a/codex-rs/core/src/agent/native_deepseek.rs b/codex-rs/core/src/agent/native_deepseek.rs
+new file mode 100644
+index 000000000..f5036df4d
 --- /dev/null
 +++ b/codex-rs/core/src/agent/native_deepseek.rs
-@@ -0,0 +1,244 @@
+@@ -0,0 +1,512 @@
 +use crate::config::Config;
++use crate::config::Constrained;
++use codex_protocol::config_types::WebSearchMode;
 +use codex_protocol::openai_models::ModelsResponse;
++use codex_protocol::openai_models::ReasoningEffort;
++use codex_model_provider_info::WireApi;
 +use std::fs;
++use url::Url;
 +
 +pub(crate) const NATIVE_DEEPSEEK_ROLE_NAME: &str = "native_deepseek";
 +pub(crate) const NATIVE_DEEPSEEK_PROVIDER_ID: &str = "deepseek-native";
 +pub(crate) const NATIVE_DEEPSEEK_MODEL: &str = "deepseek/deepseek-flash";
 +pub(crate) const NATIVE_DEEPSEEK_CATALOG_FILE: &str = "sol-luna-native-models.json";
++const NATIVE_API_ROLE_PREFIX: &str = "native_api_";
++const NATIVE_API_PROVIDER_PREFIX: &str = "api-native-";
++const NATIVE_API_CATALOG_PREFIX: &str = "sol-luna-native-models-";
++
++pub(crate) fn native_api_profile_hash(role_name: &str) -> Result<Option<&str>, String> {
++    let Some(hash) = role_name.strip_prefix(NATIVE_API_ROLE_PREFIX) else {
++        return Ok(None);
++    };
++    if hash.len() != 24 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
++        return Err("native API role name must end in 24 lowercase hexadecimal characters".to_string());
++    }
++    Ok(Some(hash))
++}
 +
 +pub(crate) fn apply_native_deepseek_child_config(
 +    config: &mut Config,
@@ -266,7 +1282,13 @@
 +    full_history_fork: bool,
 +) -> Result<(), String> {
 +    if role_name != Some(NATIVE_DEEPSEEK_ROLE_NAME) {
-+        return Ok(());
++        let Some(role_name) = role_name else {
++            return Ok(());
++        };
++        let Some(profile_hash) = native_api_profile_hash(role_name)? else {
++            return Ok(());
++        };
++        return apply_native_api_profile_child_config(config, role_name, profile_hash, full_history_fork);
 +    }
 +    if full_history_fork {
 +        return Err("native_deepseek child does not support full-history forks".to_string());
@@ -347,10 +1369,150 @@
 +    Ok(())
 +}
 +
++fn apply_native_api_profile_child_config(
++    config: &mut Config,
++    role_name: &str,
++    profile_hash: &str,
++    full_history_fork: bool,
++) -> Result<(), String> {
++    if !config.agent_roles.contains_key(role_name) {
++        return Err(format!("native API profile role `{role_name}` is not registered"));
++    }
++    if full_history_fork {
++        return Err(format!("{role_name} does not support full-history forks"));
++    }
++    let provider_id = format!("{NATIVE_API_PROVIDER_PREFIX}{profile_hash}");
++    if let Some(required_provider) = config.config_layer_stack.required_model_provider()
++        && required_provider != provider_id
++    {
++        return Err(format!(
++            "{role_name} requires provider `{provider_id}`, but managed configuration requires `{required_provider}`"
++        ));
++    }
++    let provider = config.model_providers.get(&provider_id).cloned().ok_or_else(|| {
++        format!("{role_name} provider `{provider_id}` is not configured")
++    })?;
++    validate_native_api_provider(&provider, profile_hash, role_name)?;
++
++    let catalog_file = format!("{NATIVE_API_CATALOG_PREFIX}{profile_hash}.json");
++    let catalog_path = config.codex_home.as_path().join(&catalog_file);
++    let bytes = fs::read(&catalog_path).map_err(|err| {
++        format!("failed to read {role_name} model catalog `{}`: {err}", catalog_path.display())
++    })?;
++    let catalog: ModelsResponse = serde_json::from_slice(&bytes).map_err(|err| {
++        format!("failed to parse {role_name} model catalog `{}`: {err}", catalog_path.display())
++    })?;
++    let model_slug = config.model.as_deref().ok_or_else(|| {
++        format!("{role_name} requires a model selected by its profile catalog")
++    })?;
++    if catalog.models.len() != 1 || catalog.models[0].slug != model_slug {
++        return Err(format!(
++            "{role_name} catalog must contain exactly the configured model `{model_slug}`"
++        ));
++    }
++    // `parameter = "none"` profiles omit role effort and advertise no reasoning levels.
++    // Clear inherited/stored parent effort instead of validating a value this catalog cannot support.
++    if catalog.models[0].supported_reasoning_levels.is_empty()
++        && catalog.models[0].default_reasoning_level.is_none()
++    {
++        config.model_reasoning_effort = None;
++    }
++    if let Some(effort) = config.model_reasoning_effort.as_ref() {
++        validate_profile_reasoning_effort(role_name, &catalog, effort)?;
++    }
++    apply_native_api_web_search_policy(config, role_name)?;
++
++    config.model_provider_id = provider_id;
++    config.model_provider = provider;
++    config.model_catalog = Some(catalog);
++    Ok(())
++}
++
++fn validate_native_api_provider(
++    provider: &codex_model_provider_info::ModelProviderInfo,
++    profile_hash: &str,
++    role_name: &str,
++) -> Result<(), String> {
++    let invalid = || format!("{role_name} provider must be an unauthenticated HTTP-only local Responses gateway for this profile");
++    let Some(base_url) = provider.base_url.as_deref() else {
++        return Err(invalid());
++    };
++    let url = Url::parse(base_url).map_err(|_| invalid())?;
++    let path = url.path_segments().map(|segments| segments.collect::<Vec<_>>()).unwrap_or_default();
++    if url.scheme() != "http"
++        || url.host_str() != Some("127.0.0.1")
++        || url.port().is_none()
++        || !url.username().is_empty()
++        || url.password().is_some()
++        || url.query().is_some()
++        || url.fragment().is_some()
++        || path.len() != 4
++        || path[0].is_empty()
++        || path[1] != "profiles"
++        || path[2] != profile_hash
++        || path[3] != "v1"
++        || provider.wire_api != WireApi::Responses
++        || provider.requires_openai_auth
++        || provider.supports_websockets
++        || provider.env_key.is_some()
++        || provider.experimental_bearer_token.is_some()
++        || provider.auth.is_some()
++        || provider.gateway_oauth.is_some()
++        || provider.aws.is_some()
++        || provider.model_catalog_url.is_some()
++        || provider.query_params.is_some()
++        || provider.http_headers.is_some()
++        || provider.env_http_headers.is_some()
++    {
++        return Err(invalid());
++    }
++    Ok(())
++}
++
++pub(crate) fn apply_native_api_web_search_policy(
++    config: &mut Config,
++    role_name: &str,
++) -> Result<(), String> {
++    config
++        .web_search_mode
++        .can_set(&WebSearchMode::Disabled)
++        .map_err(|err| {
++            format!(
++                "{role_name} requires web_search disabled, but managed configuration disallows it: {err}"
++            )
++        })?;
++    // First-version profile children keep the hosted search tool off for every turn.
++    config.web_search_mode = Constrained::allow_only(WebSearchMode::Disabled);
++    Ok(())
++}
++
++pub(crate) fn validate_profile_reasoning_effort(
++    role_name: &str,
++    catalog: &ModelsResponse,
++    effort: &ReasoningEffort,
++) -> Result<(), String> {
++    let supported_levels = &catalog.models[0].supported_reasoning_levels;
++    if !supported_levels.iter().any(|preset| &preset.effort == effort) {
++        let supported = supported_levels
++            .iter()
++            .map(|preset| preset.effort.to_string())
++            .collect::<Vec<_>>()
++            .join(", ");
++        return Err(format!(
++            "Reasoning effort `{effort}` is not supported for {role_name}. Supported reasoning efforts: {supported}"
++        ));
++    }
++    Ok(())
++}
++
 +#[cfg(test)]
 +mod tests {
++    use super::NATIVE_API_CATALOG_PREFIX;
 +    use super::apply_native_deepseek_child_config;
++    use crate::config::Constrained;
 +    use crate::config::{Config, ConfigBuilder};
++    use codex_model_provider_info::ModelProviderInfo;
++    use codex_protocol::config_types::WebSearchMode;
 +    use codex_models_manager::model_info::model_info_from_slug;
 +    use codex_protocol::openai_models::ModelsResponse;
 +    use pretty_assertions::assert_eq;
@@ -494,7 +1656,572 @@
 +        assert!(error.contains("managed configuration requires `openai`"));
 +        assert_ne!(config.model_provider_id, PROVIDER);
 +    }
++
++    #[tokio::test]
++    async fn native_api_profile_child_uses_owned_provider_and_catalog_without_changing_parent() {
++        let (home, mut parent) = test_config().await;
++        parent.web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
++        let role_hash = "0123456789abcdef01234567";
++        let role = format!("native_api_{role_hash}");
++        let provider_id = format!("api-native-{role_hash}");
++        let catalog_file = format!("sol-luna-native-models-{role_hash}.json");
++        let model_slug = "vendor/custom-model";
++        parent.agent_roles.insert(
++            role.clone(),
++            crate::config::AgentRoleConfig::default(),
++        );
++        parent.model = Some(model_slug.to_string());
++        let mut provider = ModelProviderInfo::default();
++        provider.name = "Custom native API test provider".to_string();
++        provider.base_url = Some(
++            "http://127.0.0.1:43210/token/profiles/0123456789abcdef01234567/v1".to_string(),
++        );
++        provider.requires_openai_auth = false;
++        provider.supports_websockets = false;
++        parent
++            .model_providers
++            .insert(provider_id.clone(), provider.clone());
++        let catalog = ModelsResponse {
++            models: vec![model_info_from_slug(model_slug)],
++        };
++        fs::write(
++            home.path().join(catalog_file),
++            serde_json::to_vec(&catalog).expect("serialize API profile catalog"),
++        )
++        .expect("write API profile catalog");
++        let mut child = parent.clone();
++        let parent_before = parent.clone();
++
++        let full_history_error = apply_native_deepseek_child_config(
++            &mut child,
++            Some(&role),
++            true,
++        )
++        .expect_err("native API profiles must reject full-history forks");
++        assert!(full_history_error.contains("full-history"));
++
++        apply_native_deepseek_child_config(&mut child, Some(&role), false)
++            .expect("registered native API profile should select its owned provider and catalog");
++
++        assert_eq!(child.model_provider_id, provider_id);
++        assert_eq!(child.model_provider, provider);
++        assert_eq!(child.model_catalog.as_ref().unwrap().models[0].slug, model_slug);
++        assert_eq!(child.web_search_mode.value(), WebSearchMode::Disabled);
++        assert_eq!(parent.web_search_mode.value(), WebSearchMode::Cached);
++        assert_eq!(parent, parent_before);
++        let mut restricted_child = child.clone();
++        assert!(restricted_child
++            .web_search_mode
++            .set(WebSearchMode::Cached)
++            .is_err());
++        assert_eq!(
++            restricted_child.web_search_mode.value(),
++            WebSearchMode::Disabled
++        );
++
++        let mut disallowed = parent.clone();
++        disallowed.web_search_mode = Constrained::allow_only(WebSearchMode::Cached);
++        let web_search_error =
++            apply_native_deepseek_child_config(&mut disallowed, Some(&role), false)
++                .expect_err("managed web search restrictions must fail explicitly");
++        assert!(web_search_error.contains("web_search"));
++    }
++
++    #[tokio::test]
++    async fn native_api_profile_rejects_invalid_hash_and_nonlocal_or_authenticated_providers() {
++        let (_invalid_home, mut invalid_config) = test_config().await;
++        let invalid_role_error = apply_native_deepseek_child_config(
++            &mut invalid_config,
++            Some("native_api_0123456789ABCDEF01234567"),
++            false,
++        )
++        .expect_err("uppercase profile hash must be rejected");
++        assert!(invalid_role_error.contains("24 lowercase hexadecimal"));
++
++        let (home, mut config) = test_config().await;
++        let hash = "0123456789abcdef01234567";
++        let role = format!("native_api_{hash}");
++        let provider_id = format!("api-native-{hash}");
++        config.agent_roles.insert(
++            role.clone(),
++            crate::config::AgentRoleConfig::default(),
++        );
++        config.model = Some("vendor/custom-model".to_string());
++        let mut provider = ModelProviderInfo::default();
++        provider.name = "Custom native API test provider".to_string();
++        provider.base_url = Some(format!(
++            "http://127.0.0.1:43210/token/profiles/{hash}/v1"
++        ));
++        provider.requires_openai_auth = true;
++        config.model_providers.insert(provider_id, provider);
++        let error = apply_native_deepseek_child_config(&mut config, Some(&role), false)
++            .expect_err("nonlocal authenticated provider must be rejected");
++        assert!(error.contains("unauthenticated HTTP-only local Responses gateway"));
++        assert_ne!(config.model_provider_id, format!("api-native-{hash}"));
++        assert!(!home.path().join(format!("{NATIVE_API_CATALOG_PREFIX}{hash}.json")).exists());
++    }
 +}
+diff --git a/codex-rs/core/src/agent/role.rs b/codex-rs/core/src/agent/role.rs
+index b1642fe5c..04cf85d2f 100644
+--- a/codex-rs/core/src/agent/role.rs
++++ b/codex-rs/core/src/agent/role.rs
+@@ -96,7 +96,8 @@ async fn apply_role_to_config_inner(
+                     | Feature::Apps
+                     | Feature::Plugins
+                     | Feature::MemoryTool
+-                    | Feature::RequestPermissionsTool),
++                    | Feature::RequestPermissionsTool
++                    | Feature::UnboundedConnectionRetries),
+                 ) = feature_for_key(&key)
+             {
+                 overrides.features.insert(feature.key().to_string(), false);
+diff --git a/codex-rs/core/src/agent/role_tests.rs b/codex-rs/core/src/agent/role_tests.rs
+index 4d97f992d..38167e932 100644
+--- a/codex-rs/core/src/agent/role_tests.rs
++++ b/codex-rs/core/src/agent/role_tests.rs
+@@ -560,6 +560,51 @@ command = "attacker-command"
+     }
+ }
+ 
++#[tokio::test]
++async fn apply_role_can_disable_unbounded_connection_retries_without_changing_parent() {
++    for (parent_enabled, role_enabled, expected_child_enabled) in
++        [(true, false, false), (false, true, false)]
++    {
++        let (home, mut child_config) = test_config_with_cli_overrides(Vec::new()).await;
++        child_config
++            .features
++            .set_enabled(Feature::UnboundedConnectionRetries, parent_enabled)
++            .expect("test config should allow unbounded retry override");
++        let parent_features = child_config.features.clone();
++        let role_path = write_role_config(
++            &home,
++            "native-deepseek-role.toml",
++            &format!("[features]\nunbounded_connection_retries = {role_enabled}\n"),
++        )
++        .await;
++        child_config.agent_roles.insert(
++            "native_deepseek".to_string(),
++            AgentRoleConfig {
++                description: None,
++                config_file: Some(role_path),
++                nickname_candidates: None,
++            },
++        );
++
++        apply_role_to_config(&mut child_config, Some("native_deepseek"))
++            .await
++            .expect("native DeepSeek role should apply");
++
++        assert_eq!(
++            child_config
++                .features
++                .enabled(Feature::UnboundedConnectionRetries),
++            expected_child_enabled,
++            "parent_enabled={parent_enabled}, role_enabled={role_enabled}"
++        );
++        assert_eq!(
++            parent_features.enabled(Feature::UnboundedConnectionRetries),
++            parent_enabled,
++            "role application must not mutate the parent feature set"
++        );
++    }
++}
++
+ #[tokio::test]
+ async fn apply_role_disables_plugins_unless_required_by_managed_policy() {
+     let home = TempDir::new().expect("create temp dir");
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 152fa7145..aff4f544f 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -89,6 +89,7 @@ use codex_protocol::ThreadId;
+ use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+ use codex_protocol::config_types::Verbosity as VerbosityConfig;
+ use codex_protocol::models::ResponseItem;
++use codex_protocol::sol_luna_wire_aliases;
+ use codex_protocol::openai_models::ModelInfo;
+ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+ use codex_protocol::protocol::AuthRecoveryEvent;
+@@ -1015,7 +1016,14 @@ impl ModelClient {
+         let mut prefix = Vec::new();
+         let tools = if model_info.use_responses_lite {
+             if !prompt.tools.is_empty() {
+-                let tools = create_tools_json_for_responses_lite(&prompt.tools)?;
++                let mut tools = create_tools_json_for_responses_lite(&prompt.tools)?;
++                if sol_luna_wire_aliases::enabled() {
++                    let encoded = sol_luna_wire_aliases::encode_tools_json(
++                        serde_json::Value::Array(tools),
++                    )
++                    .map_err(CodexErr::Fatal)?;
++                    tools = encoded.as_array().cloned().unwrap_or_default();
++                }
+                 prefix.push(ResponseItem::AdditionalTools {
+                     id: Some(ResponseItemId::with_suffix(
+                         "at",
+@@ -1027,7 +1035,17 @@ impl ModelClient {
+             }
+             None
+         } else {
+-            Some(create_tools_raw_json_for_responses_api(&prompt.tools)?.into())
++            let raw_tools = create_tools_raw_json_for_responses_api(&prompt.tools)?;
++            if sol_luna_wire_aliases::enabled() {
++                let tools = serde_json::from_str(raw_tools.get())?;
++                let encoded = sol_luna_wire_aliases::encode_tools_json(tools)
++                    .map_err(CodexErr::Fatal)?;
++                let raw_tools: Arc<serde_json::value::RawValue> =
++                    Arc::from(serde_json::value::to_raw_value(&encoded)?);
++                Some(raw_tools.into())
++            } else {
++                Some(raw_tools.into())
++            }
+         };
+         if !prompt.base_instructions.text.is_empty() {
+             let mut instructions = ContextualUserFragment::into(BaseInstructionsFragment(
+@@ -1109,6 +1127,11 @@ impl ModelClient {
+                 item.clear_tool_result_metadata();
+             }
+         }
++        if sol_luna_wire_aliases::enabled() {
++            for item in &mut input {
++                sol_luna_wire_aliases::encode_response_item(item).map_err(CodexErr::Fatal)?;
++            }
++        }
+         let client_metadata = responses_metadata.client_metadata(include_internal);
+         let request = ResponsesApiRequest {
+             model: model_info.slug.clone(),
+diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
+index b2d22649a..5e30375b9 100644
+--- a/codex-rs/core/src/thread_manager.rs
++++ b/codex-rs/core/src/thread_manager.rs
+@@ -15,6 +15,10 @@ use crate::agent::LocalAgentControl;
+ use crate::agent::api::AgentConfigUpdate;
+ use crate::agent::api::AgentControl;
+ use crate::agent::control::AgentControlInit;
++use crate::agent::native_deepseek::NATIVE_DEEPSEEK_MODEL;
++use crate::agent::native_deepseek::NATIVE_DEEPSEEK_PROVIDER_ID;
++use crate::agent::native_deepseek::NATIVE_DEEPSEEK_ROLE_NAME;
++use crate::agent::native_deepseek::native_api_profile_hash;
+ use crate::agents_md_manager::SessionInstructions;
+ use crate::attestation::AttestationProvider;
+ use crate::codex_thread::CodexThread;
+@@ -482,6 +486,68 @@ pub fn build_models_manager(
+     manager
+ }
+ 
++/// Selects the model manager at the `spawn_thread` boundary.
++///
++/// Ordinary root, Sol, and Luna sessions keep sharing the root manager. A
++/// Native provider roles own their provider and catalog, so they must use a
++/// manager built from that child config instead of inheriting root metadata.
++fn select_models_manager_for_session(
++    config: &Config,
++    auth_manager: Arc<AuthManager>,
++    root_models_manager: SharedModelsManager,
++    session_source: &SessionSource,
++) -> CodexResult<SharedModelsManager> {
++    let role_name = session_source.get_agent_role();
++    if role_name.as_deref() == Some(NATIVE_DEEPSEEK_ROLE_NAME) {
++        if config.model_provider_id != NATIVE_DEEPSEEK_PROVIDER_ID
++            || !config
++                .model_providers
++                .contains_key(NATIVE_DEEPSEEK_PROVIDER_ID)
++        {
++            return Err(CodexErr::InvalidRequest(format!(
++                "native_deepseek child requires provider `{NATIVE_DEEPSEEK_PROVIDER_ID}`"
++            )));
++        }
++        if !config.model_catalog.as_ref().is_some_and(|catalog| {
++            catalog
++                .models
++                .iter()
++                .any(|model| model.slug == NATIVE_DEEPSEEK_MODEL)
++        }) {
++            return Err(CodexErr::InvalidRequest(format!(
++                "native_deepseek child catalog must include `{NATIVE_DEEPSEEK_MODEL}`"
++            )));
++        }
++        return Ok(build_models_manager(config, auth_manager));
++    }
++
++    let Some(role_name) = role_name else {
++        return Ok(root_models_manager);
++    };
++    let profile_hash = native_api_profile_hash(&role_name)
++        .map_err(CodexErr::InvalidRequest)?;
++    let Some(profile_hash) = profile_hash else {
++        return Ok(root_models_manager);
++    };
++    let provider_id = format!("api-native-{profile_hash}");
++    if config.model_provider_id != provider_id || !config.model_providers.contains_key(&provider_id) {
++        return Err(CodexErr::InvalidRequest(format!(
++            "{role_name} child requires provider `{provider_id}`"
++        )));
++    }
++    let model = config.model.as_deref().ok_or_else(|| {
++        CodexErr::InvalidRequest(format!("{role_name} child requires its profile model"))
++    })?;
++    if !config.model_catalog.as_ref().is_some_and(|catalog| {
++        catalog.models.len() == 1 && catalog.models[0].slug == model
++    }) {
++        return Err(CodexErr::InvalidRequest(format!(
++            "{role_name} child catalog must contain exactly configured model `{model}`"
++        )));
++    }
++    Ok(build_models_manager(config, auth_manager))
++}
++
+ pub fn thread_store_from_config(
+     config: &Config,
+     state_db: Option<StateDbHandle>,
+@@ -2396,6 +2462,20 @@ impl ThreadManagerState {
+         };
+         let attachment_source =
+             forked_from_thread_id.filter(|_| matches!(&initial_history, InitialHistory::Forked(_)));
++        let models_manager = match select_models_manager_for_session(
++            &config,
++            Arc::clone(&auth_manager),
++            Arc::clone(&self.models_manager),
++            &tracked_session_source,
++        ) {
++            Ok(models_manager) => models_manager,
++            Err(error) => {
++                if let Some(startup_guard) = startup_guard {
++                    startup_guard.cleanup().await;
++                }
++                return Err(error);
++            }
++        };
+         let spawn_result = Session::spawn(SessionSpawnArgs {
+             startup,
+             config,
+@@ -2404,7 +2484,7 @@ impl ThreadManagerState {
+             instructions,
+             installation_id: self.installation_id.clone(),
+             auth_manager,
+-            models_manager: Arc::clone(&self.models_manager),
++            models_manager,
+             git_root_discovery: Arc::clone(&self.git_root_discovery),
+             environment_manager: Arc::clone(&self.environment_manager),
+             skills_service: Arc::clone(&self.skills_service),
+@@ -2850,3 +2930,203 @@ fn append_interrupted_boundary(
+ #[cfg(test)]
+ #[path = "thread_manager_tests.rs"]
+ mod tests;
++
++#[cfg(test)]
++mod native_deepseek_models_manager_tests {
++    use super::{build_models_manager, select_models_manager_for_session};
++    use crate::agent::native_deepseek::{
++        NATIVE_DEEPSEEK_MODEL, NATIVE_DEEPSEEK_PROVIDER_ID, NATIVE_DEEPSEEK_ROLE_NAME,
++    };
++    use crate::agent::native_deepseek::native_api_profile_hash;
++    use crate::config::ConfigBuilder;
++    use codex_login::{AuthManager, CodexAuth};
++    use codex_model_provider_info::ModelProviderInfo;
++    use codex_models_manager::model_info::model_info_from_slug;
++    use codex_protocol::openai_models::ModelsResponse;
++    use codex_protocol::protocol::{SessionSource, SubAgentSource};
++    use pretty_assertions::assert_eq;
++    use std::sync::Arc;
++    use tempfile::TempDir;
++
++    #[tokio::test]
++    async fn native_deepseek_spawn_uses_child_catalog_without_replacing_root_manager() {
++        let home = TempDir::new().expect("create codex home");
++        let mut root_config = ConfigBuilder::default()
++            .codex_home(home.path().to_path_buf())
++            .fallback_cwd(Some(home.path().to_path_buf()))
++            .build()
++            .await
++            .expect("build root test config");
++        let mut root_model = model_info_from_slug("gpt-6-luna");
++        root_model.context_window = Some(32_000);
++        root_config.model_catalog = Some(ModelsResponse {
++            models: vec![root_model],
++        });
++        let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
++        let root_manager = build_models_manager(&root_config, Arc::clone(&auth_manager));
++
++        let mut child_config = root_config.clone();
++        child_config.model = Some(NATIVE_DEEPSEEK_MODEL.to_string());
++        let mut child_provider = child_config.model_provider.clone();
++        child_provider.name = "DeepSeek native test provider".to_string();
++        child_provider.base_url = Some("https://example.invalid/v1".to_string());
++        child_provider.requires_openai_auth = false;
++        child_config.model_providers.insert(
++            NATIVE_DEEPSEEK_PROVIDER_ID.to_string(),
++            child_provider.clone(),
++        );
++        child_config.model_provider_id = NATIVE_DEEPSEEK_PROVIDER_ID.to_string();
++        child_config.model_provider = child_provider;
++        let mut child_model = model_info_from_slug(NATIVE_DEEPSEEK_MODEL);
++        child_model.context_window = Some(1_000_000);
++        child_model.max_context_window = Some(1_000_000);
++        child_model.auto_compact_token_limit = Some(1);
++        child_config.model_catalog = Some(ModelsResponse {
++            models: vec![child_model],
++        });
++
++        let deepseek_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++            parent_thread_id: codex_protocol::ThreadId::new(),
++            depth: 1,
++            agent_path: None,
++            agent_nickname: None,
++            agent_role: Some(NATIVE_DEEPSEEK_ROLE_NAME.to_string()),
++        });
++        // `spawn_thread` invokes this selector with the tracked session source before
++        // `Session::spawn`; fresh and cold-resumed threads share the same path.
++        let selected = select_models_manager_for_session(
++            &child_config,
++            Arc::clone(&auth_manager),
++            Arc::clone(&root_manager),
++            &deepseek_source,
++        )
++        .expect("native child manager selection should succeed");
++        assert!(!Arc::ptr_eq(&selected, &root_manager));
++
++        let info = selected
++            .get_model_info(
++                NATIVE_DEEPSEEK_MODEL,
++                &child_config.to_models_manager_config(),
++            )
++            .await;
++        assert_eq!(info.context_window, Some(1_000_000));
++        assert_eq!(info.auto_compact_token_limit, Some(1));
++        assert!(!info.used_fallback_model_metadata);
++
++        let mut mismatched_provider = child_config.clone();
++        mismatched_provider.model_provider_id = "openai".to_string();
++        let error = select_models_manager_for_session(
++            &mismatched_provider,
++            Arc::clone(&auth_manager),
++            Arc::clone(&root_manager),
++            &deepseek_source,
++        )
++        .expect_err("mismatched provider id must not build a child manager");
++        assert!(error.to_string().contains(NATIVE_DEEPSEEK_PROVIDER_ID));
++
++        let mut missing_provider = child_config.clone();
++        missing_provider
++            .model_providers
++            .remove(NATIVE_DEEPSEEK_PROVIDER_ID);
++        let error = select_models_manager_for_session(
++            &missing_provider,
++            Arc::clone(&auth_manager),
++            Arc::clone(&root_manager),
++            &deepseek_source,
++        )
++        .expect_err("missing native provider must not build a child manager");
++        assert!(error.to_string().contains(NATIVE_DEEPSEEK_PROVIDER_ID));
++
++        let mut missing_catalog = child_config.clone();
++        missing_catalog.model_catalog = None;
++        let error = select_models_manager_for_session(
++            &missing_catalog,
++            Arc::clone(&auth_manager),
++            Arc::clone(&root_manager),
++            &deepseek_source,
++        )
++        .expect_err("missing child catalog must not build a child manager");
++        assert!(error.to_string().contains(NATIVE_DEEPSEEK_MODEL));
++
++        let profile_hash = "0123456789abcdef01234567";
++        let profile_role = format!("native_api_{profile_hash}");
++        let profile_provider_id = format!("api-native-{profile_hash}");
++        let profile_model_slug = "vendor/custom-model";
++        let mut profile_config = root_config.clone();
++        profile_config.model = Some(profile_model_slug.to_string());
++        let mut profile_provider = ModelProviderInfo::default();
++        profile_provider.name = "Native API test provider".to_string();
++        profile_provider.base_url = Some(format!(
++            "http://127.0.0.1:43210/token/profiles/{profile_hash}/v1"
++        ));
++        profile_provider.requires_openai_auth = false;
++        profile_provider.supports_websockets = false;
++        profile_config
++            .model_providers
++            .insert(profile_provider_id.clone(), profile_provider.clone());
++        profile_config.model_provider_id = profile_provider_id;
++        profile_config.model_provider = profile_provider;
++        let mut profile_model = model_info_from_slug(profile_model_slug);
++        profile_model.context_window = Some(64_000);
++        profile_config.model_catalog = Some(ModelsResponse {
++            models: vec![profile_model],
++        });
++        let profile_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++            parent_thread_id: codex_protocol::ThreadId::new(),
++            depth: 1,
++            agent_path: None,
++            agent_nickname: None,
++            agent_role: Some(profile_role.clone()),
++        });
++        assert_eq!(native_api_profile_hash(&profile_role).unwrap(), Some(profile_hash));
++        let profile_manager = select_models_manager_for_session(
++            &profile_config,
++            Arc::clone(&auth_manager),
++            Arc::clone(&root_manager),
++            &profile_source,
++        )
++        .expect("profile child manager selection should succeed");
++        assert!(!Arc::ptr_eq(&profile_manager, &root_manager));
++        let profile_info = profile_manager
++            .get_model_info(
++                profile_model_slug,
++                &profile_config.to_models_manager_config(),
++            )
++            .await;
++        assert_eq!(profile_info.context_window, Some(64_000));
++
++        let root_after = root_manager
++            .get_model_info("gpt-6-luna", &root_config.to_models_manager_config())
++            .await;
++        assert_eq!(root_after.context_window, Some(32_000));
++        assert!(!root_after.used_fallback_model_metadata);
++        assert!(Arc::ptr_eq(
++            &select_models_manager_for_session(
++                &root_config,
++                Arc::clone(&auth_manager),
++                Arc::clone(&root_manager),
++                &SessionSource::Cli,
++            )
++            .expect("root manager selection should succeed"),
++            &root_manager,
++        ));
++
++        let luna_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++            parent_thread_id: codex_protocol::ThreadId::new(),
++            depth: 1,
++            agent_path: None,
++            agent_nickname: None,
++            agent_role: Some("native_luna".to_string()),
++        });
++        assert!(Arc::ptr_eq(
++            &select_models_manager_for_session(
++                &root_config,
++                auth_manager,
++                Arc::clone(&root_manager),
++                &luna_source,
++            )
++            .expect("Luna manager selection should succeed"),
++            &root_manager,
++        ));
++    }
++}
+diff --git a/codex-rs/protocol/src/lib.rs b/codex-rs/protocol/src/lib.rs
+index 17e22cc5a..efb6cd8f9 100644
+--- a/codex-rs/protocol/src/lib.rs
++++ b/codex-rs/protocol/src/lib.rs
+@@ -54,5 +54,6 @@ pub mod review_format;
+ pub mod sandbox;
+ pub mod security_risk;
+ pub mod shell_environment;
++pub mod sol_luna_wire_aliases;
+ pub mod turn_input;
+ pub mod user_input;
+diff --git a/codex-rs/protocol/src/sol_luna_wire_aliases.rs b/codex-rs/protocol/src/sol_luna_wire_aliases.rs
+new file mode 100644
+index 000000000..ae5b868cb
 --- /dev/null
 +++ b/codex-rs/protocol/src/sol_luna_wire_aliases.rs
 @@ -0,0 +1,504 @@
@@ -717,8 +2444,8 @@
 +fn transform_response_item(item: &mut ResponseItem, direction: Direction) -> Result<(), String> {
 +    match item {
 +        ResponseItem::AdditionalTools { tools, .. } => {
-+            let transformed = transform_tools(Value::Array(tools.clone()), direction)?;
-+            *tools = transformed.as_array().cloned().unwrap_or_default();
++            let transformed = transform_tools(Value::Array(tools.to_vec()), direction)?;
++            *tools = transformed.as_array().cloned().unwrap_or_default().into();
 +        }
 +        ResponseItem::FunctionCall { name, namespace, encrypted_function_args, .. } => {
 +            let effective_namespace = namespace.as_deref().map(str::to_string);
@@ -1000,250 +2727,5 @@
 +        assert!(canonical["tools"][0]["tools"][0]["parameters"]["properties"]["message"]["encrypted"].is_null());
 +        assert_eq!(canonical["tools"][0]["tools"][0]["parameters"]["properties"]["other"]["encrypted"], true);
 +        assert_eq!(canonical["tools"][1]["parameters"]["properties"]["message"]["encrypted"], true);
-+    }
-+}
-diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
-index 2fb6da8..145b5b4 100644
---- a/codex-rs/core/src/thread_manager.rs
-+++ b/codex-rs/core/src/thread_manager.rs
-@@ -15,6 +15,9 @@ use crate::agent::LocalAgentControl;
- use crate::agent::api::AgentConfigUpdate;
- use crate::agent::api::AgentControl;
- use crate::agent::control::AgentControlInit;
-+use crate::agent::native_deepseek::NATIVE_DEEPSEEK_MODEL;
-+use crate::agent::native_deepseek::NATIVE_DEEPSEEK_PROVIDER_ID;
-+use crate::agent::native_deepseek::NATIVE_DEEPSEEK_ROLE_NAME;
- use crate::agents_md_manager::SessionInstructions;
- use crate::attestation::AttestationProvider;
- use crate::codex_thread::CodexThread;
-@@ -461,6 +464,45 @@ pub fn build_models_manager(
-     manager
- }
- 
-+/// Selects the model manager at the `spawn_thread` boundary.
-+///
-+/// Ordinary root, Sol, and Luna sessions keep sharing the root manager. A
-+/// `native_deepseek` child owns an explicit provider and catalog, so it must use
-+/// a manager built from that child config instead of inheriting the root
-+/// manager's fallback metadata and compaction threshold.
-+fn select_models_manager_for_session(
-+    config: &Config,
-+    auth_manager: Arc<AuthManager>,
-+    root_models_manager: SharedModelsManager,
-+    session_source: &SessionSource,
-+) -> CodexResult<SharedModelsManager> {
-+    if session_source.get_agent_role().as_deref() != Some(NATIVE_DEEPSEEK_ROLE_NAME) {
-+        return Ok(root_models_manager);
-+    }
-+
-+    if config.model_provider_id != NATIVE_DEEPSEEK_PROVIDER_ID
-+        || !config
-+            .model_providers
-+            .contains_key(NATIVE_DEEPSEEK_PROVIDER_ID)
-+    {
-+        return Err(CodexErr::InvalidRequest(format!(
-+            "native_deepseek child requires provider `{NATIVE_DEEPSEEK_PROVIDER_ID}`"
-+        )));
-+    }
-+    if !config.model_catalog.as_ref().is_some_and(|catalog| {
-+        catalog
-+            .models
-+            .iter()
-+            .any(|model| model.slug == NATIVE_DEEPSEEK_MODEL)
-+    }) {
-+        return Err(CodexErr::InvalidRequest(format!(
-+            "native_deepseek child catalog must include `{NATIVE_DEEPSEEK_MODEL}`"
-+        )));
-+    }
-+
-+    Ok(build_models_manager(config, auth_manager))
-+}
-+
- pub fn thread_store_from_config(
-     config: &Config,
-     state_db: Option<StateDbHandle>,
-@@ -2323,6 +2365,20 @@ impl ThreadManagerState {
-         };
-         let attachment_source =
-             forked_from_thread_id.filter(|_| matches!(&initial_history, InitialHistory::Forked(_)));
-+        let models_manager = match select_models_manager_for_session(
-+            &config,
-+            Arc::clone(&auth_manager),
-+            Arc::clone(&self.models_manager),
-+            &tracked_session_source,
-+        ) {
-+            Ok(models_manager) => models_manager,
-+            Err(error) => {
-+                if let Some(startup_guard) = startup_guard {
-+                    startup_guard.cleanup().await;
-+                }
-+                return Err(error);
-+            }
-+        };
-         let spawn_result = Session::spawn(SessionSpawnArgs {
-             startup,
-             config,
-@@ -2330,7 +2386,7 @@ impl ThreadManagerState {
-             instructions,
-             installation_id: self.installation_id.clone(),
-             auth_manager,
--            models_manager: Arc::clone(&self.models_manager),
-+            models_manager,
-             git_root_discovery: Arc::clone(&self.git_root_discovery),
-             environment_manager: Arc::clone(&self.environment_manager),
-             skills_service: Arc::clone(&self.skills_service),
-@@ -2768,3 +2824,154 @@ fn append_interrupted_boundary(
- #[cfg(test)]
- #[path = "thread_manager_tests.rs"]
- mod tests;
-+
-+#[cfg(test)]
-+mod native_deepseek_models_manager_tests {
-+    use super::{build_models_manager, select_models_manager_for_session};
-+    use crate::agent::native_deepseek::{
-+        NATIVE_DEEPSEEK_MODEL, NATIVE_DEEPSEEK_PROVIDER_ID, NATIVE_DEEPSEEK_ROLE_NAME,
-+    };
-+    use crate::config::ConfigBuilder;
-+    use codex_login::{AuthManager, CodexAuth};
-+    use codex_models_manager::model_info::model_info_from_slug;
-+    use codex_protocol::openai_models::ModelsResponse;
-+    use codex_protocol::protocol::{SessionSource, SubAgentSource};
-+    use pretty_assertions::assert_eq;
-+    use std::sync::Arc;
-+    use tempfile::TempDir;
-+
-+    #[tokio::test]
-+    async fn native_deepseek_spawn_uses_child_catalog_without_replacing_root_manager() {
-+        let home = TempDir::new().expect("create codex home");
-+        let mut root_config = ConfigBuilder::default()
-+            .codex_home(home.path().to_path_buf())
-+            .fallback_cwd(Some(home.path().to_path_buf()))
-+            .build()
-+            .await
-+            .expect("build root test config");
-+        let mut root_model = model_info_from_slug("gpt-6-luna");
-+        root_model.context_window = Some(32_000);
-+        root_config.model_catalog = Some(ModelsResponse {
-+            models: vec![root_model],
-+        });
-+        let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
-+        let root_manager = build_models_manager(&root_config, Arc::clone(&auth_manager));
-+
-+        let mut child_config = root_config.clone();
-+        child_config.model = Some(NATIVE_DEEPSEEK_MODEL.to_string());
-+        let mut child_provider = child_config.model_provider.clone();
-+        child_provider.name = "DeepSeek native test provider".to_string();
-+        child_provider.base_url = Some("https://example.invalid/v1".to_string());
-+        child_provider.requires_openai_auth = false;
-+        child_config.model_providers.insert(
-+            NATIVE_DEEPSEEK_PROVIDER_ID.to_string(),
-+            child_provider.clone(),
-+        );
-+        child_config.model_provider_id = NATIVE_DEEPSEEK_PROVIDER_ID.to_string();
-+        child_config.model_provider = child_provider;
-+        let mut child_model = model_info_from_slug(NATIVE_DEEPSEEK_MODEL);
-+        child_model.context_window = Some(1_000_000);
-+        child_model.max_context_window = Some(1_000_000);
-+        child_model.auto_compact_token_limit = Some(1);
-+        child_config.model_catalog = Some(ModelsResponse {
-+            models: vec![child_model],
-+        });
-+
-+        let deepseek_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-+            parent_thread_id: codex_protocol::ThreadId::new(),
-+            depth: 1,
-+            agent_path: None,
-+            agent_nickname: None,
-+            agent_role: Some(NATIVE_DEEPSEEK_ROLE_NAME.to_string()),
-+        });
-+        // `spawn_thread` invokes this selector with the tracked session source before
-+        // `Session::spawn`; fresh and cold-resumed threads share the same path.
-+        let selected = select_models_manager_for_session(
-+            &child_config,
-+            Arc::clone(&auth_manager),
-+            Arc::clone(&root_manager),
-+            &deepseek_source,
-+        )
-+        .expect("native child manager selection should succeed");
-+        assert!(!Arc::ptr_eq(&selected, &root_manager));
-+
-+        let info = selected
-+            .get_model_info(
-+                NATIVE_DEEPSEEK_MODEL,
-+                &child_config.to_models_manager_config(),
-+            )
-+            .await;
-+        assert_eq!(info.context_window, Some(1_000_000));
-+        assert_eq!(info.auto_compact_token_limit, Some(1));
-+        assert!(!info.used_fallback_model_metadata);
-+
-+        let mut mismatched_provider = child_config.clone();
-+        mismatched_provider.model_provider_id = "openai".to_string();
-+        let error = select_models_manager_for_session(
-+            &mismatched_provider,
-+            Arc::clone(&auth_manager),
-+            Arc::clone(&root_manager),
-+            &deepseek_source,
-+        )
-+        .expect_err("mismatched provider id must not build a child manager");
-+        assert!(error.to_string().contains(NATIVE_DEEPSEEK_PROVIDER_ID));
-+
-+        let mut missing_provider = child_config.clone();
-+        missing_provider
-+            .model_providers
-+            .remove(NATIVE_DEEPSEEK_PROVIDER_ID);
-+        let error = select_models_manager_for_session(
-+            &missing_provider,
-+            Arc::clone(&auth_manager),
-+            Arc::clone(&root_manager),
-+            &deepseek_source,
-+        )
-+        .expect_err("missing native provider must not build a child manager");
-+        assert!(error.to_string().contains(NATIVE_DEEPSEEK_PROVIDER_ID));
-+
-+        let mut missing_catalog = child_config.clone();
-+        missing_catalog.model_catalog = None;
-+        let error = select_models_manager_for_session(
-+            &missing_catalog,
-+            Arc::clone(&auth_manager),
-+            Arc::clone(&root_manager),
-+            &deepseek_source,
-+        )
-+        .expect_err("missing child catalog must not build a child manager");
-+        assert!(error.to_string().contains(NATIVE_DEEPSEEK_MODEL));
-+
-+        let root_after = root_manager
-+            .get_model_info("gpt-6-luna", &root_config.to_models_manager_config())
-+            .await;
-+        assert_eq!(root_after.context_window, Some(32_000));
-+        assert!(!root_after.used_fallback_model_metadata);
-+        assert!(Arc::ptr_eq(
-+            &select_models_manager_for_session(
-+                &root_config,
-+                Arc::clone(&auth_manager),
-+                Arc::clone(&root_manager),
-+                &SessionSource::Cli,
-+            )
-+            .expect("root manager selection should succeed"),
-+            &root_manager,
-+        ));
-+
-+        let luna_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-+            parent_thread_id: codex_protocol::ThreadId::new(),
-+            depth: 1,
-+            agent_path: None,
-+            agent_nickname: None,
-+            agent_role: Some("native_luna".to_string()),
-+        });
-+        assert!(Arc::ptr_eq(
-+            &select_models_manager_for_session(
-+                &root_config,
-+                auth_manager,
-+                Arc::clone(&root_manager),
-+                &luna_source,
-+            )
-+            .expect("Luna manager selection should succeed"),
-+            &root_manager,
-+        ));
 +    }
 +}

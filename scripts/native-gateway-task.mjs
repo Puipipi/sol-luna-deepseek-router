@@ -5,10 +5,14 @@ import { fileURLToPath } from "node:url";
 
 const OWNERSHIP_PREFIX = "sol-luna-native-gateway-task:v1:";
 const TASK_NAME_PREFIX = "SolLunaNativeGateway-";
+const API_OWNERSHIP_PREFIX = "sol-luna-native-api-task:v1:";
+const API_TASK_NAME_PREFIX = "SolLunaNativeApi-";
 const POWERSHELL_TIMEOUT_MS = 10_000;
 const RESTART_COUNT = 3;
 const RESTART_INTERVAL_MINUTES = 1;
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
+export const windowsTaskTriggerPolicyScript = String.raw`$triggerCount = @($task.Triggers | Where-Object { $null -ne $_ }).Count
+$triggerMatches = if ($request.autoStart) { $triggerCount -eq 1 } else { $triggerCount -eq 0 }`;
 
 function taskError(message, code) {
   const error = new Error(message);
@@ -44,10 +48,11 @@ function Get-TaskRecord($request) {
   try { $restartCount = [int]$task.Settings.RestartCount } catch { }
   $restartIntervalSeconds = -1
   try { $restartIntervalSeconds = [int][System.Xml.XmlConvert]::ToTimeSpan([string]$task.Settings.RestartInterval).TotalSeconds } catch { }
+  ${windowsTaskTriggerPolicyScript}
   $settingsMatches = [string]$task.Settings.MultipleInstances -eq 'IgnoreNew' -and
     $executionLimit -eq [TimeSpan]::Zero -and
     $restartCount -eq ${RESTART_COUNT} -and $restartIntervalSeconds -eq ${RESTART_INTERVAL_MINUTES * 60} -and
-    [bool]$task.Settings.AllowDemandStart -and [bool]$task.Settings.Hidden
+    [bool]$task.Settings.AllowDemandStart -and [bool]$task.Settings.Hidden -and $triggerMatches
   $owned = $task.Description -ceq $request.marker -and $actionMatches
   $info = Get-ScheduledTaskInfo -InputObject $task
   return @{
@@ -65,12 +70,13 @@ switch ($request.operation) {
   'register' {
     if ($record.exists -and -not $record.owned) { throw 'task ownership conflict' }
     $action = New-ScheduledTaskAction -Execute $request.execute -Argument $request.arguments -WorkingDirectory $request.workingDirectory
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
     $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount ${RESTART_COUNT} -RestartInterval (New-TimeSpan -Minutes ${RESTART_INTERVAL_MINUTES}) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     $settings.AllowDemandStart = $true
     $settings.Hidden = $true
-    Register-ScheduledTask -TaskName $request.name -Description $request.marker -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    $registerParams = @{ TaskName = $request.name; Description = $request.marker; Action = $action; Principal = $principal; Settings = $settings; Force = $true }
+    if ($request.autoStart) { $registerParams.Trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name) }
+    Register-ScheduledTask @registerParams | Out-Null
     $result = Get-TaskRecord $request
   }
   'start' {
@@ -79,6 +85,18 @@ switch ($request.operation) {
     if (-not $record.enabled) { throw 'owned task is disabled' }
     Start-ScheduledTask -TaskName $request.name
     $result = @{ started = $true }
+  }
+  'disable' {
+    if (-not $record.exists) { throw 'owned task is not registered' }
+    if (-not $record.owned -or -not $record.specMatches) { throw 'task ownership or specification conflict' }
+    if ($record.enabled) { Disable-ScheduledTask -TaskName $request.name | Out-Null }
+    $result = Get-TaskRecord $request
+  }
+  'enable' {
+    if (-not $record.exists) { throw 'owned task is not registered' }
+    if (-not $record.owned -or -not $record.specMatches) { throw 'task ownership or specification conflict' }
+    if (-not $record.enabled) { Enable-ScheduledTask -TaskName $request.name | Out-Null }
+    $result = Get-TaskRecord $request
   }
   'unregister' {
     if (-not $record.exists) { $result = @{ removed = $false } }
@@ -108,7 +126,7 @@ function taskHash(directory) {
   return createHash("sha256").update(path.resolve(directory).toLowerCase()).digest("hex").slice(0, 20);
 }
 
-export function gatewayTaskPlan({ paths, nodePath = process.execPath, wscriptPath, gatewayScriptPath } = {}) {
+export function gatewayTaskPlan({ paths, nodePath = process.execPath, wscriptPath, gatewayScriptPath, service = null, settingsPath } = {}) {
   if (!paths || typeof paths !== "object") throw new Error("gateway paths are required");
   const dir = absolutePath(paths.dir, "gateway directory");
   const state = absolutePath(paths.state, "gateway state path");
@@ -117,12 +135,16 @@ export function gatewayTaskPlan({ paths, nodePath = process.execPath, wscriptPat
   const node = absolutePath(nodePath, "Node executable");
   const wscript = absolutePath(wscriptPath || path.join(process.env.SystemRoot || "C:\\Windows", "System32", "wscript.exe"), "wscript executable");
   const gateway = absolutePath(gatewayScriptPath || path.join(SCRIPT_DIRECTORY, "native-gateway.mjs"), "gateway script");
+  const api = service === "api";
+  if (service !== null && !api) throw new Error("unsupported native gateway service");
   const hash = taskHash(dir);
-  const name = `${TASK_NAME_PREFIX}${hash}`;
-  const marker = `${OWNERSHIP_PREFIX}${hash}`;
-  const launcherPath = path.join(dir, "gateway-task.vbs");
+  const name = `${api ? API_TASK_NAME_PREFIX : TASK_NAME_PREFIX}${hash}`;
+  const marker = `${api ? API_OWNERSHIP_PREFIX : OWNERSHIP_PREFIX}${hash}`;
+  const launcherPath = path.join(dir, api ? "api-task.vbs" : "gateway-task.vbs");
+  const serveArgs = api ? ["--serve", "--api-only"] : ["--serve", "--deepseek-only"];
+  if (api && settingsPath) serveArgs.push("--settings", windowsQuote(absolutePath(settingsPath, "API settings path")));
   const command = [
-    windowsQuote(node), windowsQuote(gateway), "--serve", "--deepseek-only",
+    windowsQuote(node), windowsQuote(gateway), ...serveArgs,
     "--state", windowsQuote(state), "--identity", windowsQuote(identity), "--log", windowsQuote(log),
   ].join(" ");
   const launcherContent = [
@@ -147,6 +169,7 @@ export function gatewayTaskPlan({ paths, nodePath = process.execPath, wscriptPat
     restartPolicy: Object.freeze({ count: RESTART_COUNT, intervalSeconds: RESTART_INTERVAL_MINUTES * 60 }),
     launcher: Object.freeze({ path: launcherPath, content: launcherContent }),
     action: Object.freeze({ execute: wscript, arguments: arguments_, workingDirectory: dir }),
+    autoStart: !api,
   });
 }
 
@@ -159,6 +182,7 @@ function requestFor(operation, plan) {
     execute: plan.action.execute,
     arguments: plan.action.arguments,
     workingDirectory: plan.action.workingDirectory,
+    autoStart: plan.autoStart !== false,
   };
 }
 
@@ -194,6 +218,8 @@ export function createWindowsTaskSchedulerAdapter({ runner = spawnSync, powershe
     status: async (plan) => invoke("status", plan),
     register: async (plan) => invoke("register", plan),
     start: async (plan) => invoke("start", plan),
+    disable: async (plan) => invoke("disable", plan),
+    enable: async (plan) => invoke("enable", plan),
     unregister: async (plan) => invoke("unregister", plan),
   });
 }
@@ -224,6 +250,7 @@ function taskPlanFingerprint(plan) {
     launcherPath: plan.launcher?.path,
     launcherContent: plan.launcher?.content,
   };
+  if (plan.autoStart === false) fingerprint.autoStart = false;
   if (plan.restartPolicy) fingerprint.restartPolicy = plan.restartPolicy;
   return createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");
 }
@@ -295,6 +322,34 @@ export async function startOwnedGatewayTask(plan, adapter) {
   if (!current.enabled) throw new Error("owned gateway task is disabled");
   if (typeof adapter.start !== "function") throw new Error("Task Scheduler start is unavailable");
   return adapter.start(plan);
+}
+
+export async function disableOwnedGatewayTask(plan, adapter) {
+  const current = await inspect(plan, adapter);
+  requireMatchingSpec(current);
+  if (!current.exists) return {disabled: false, reason: 'not_registered'};
+  if (!current.owned) throw new Error("gateway task ownership conflict; refusing to disable the task");
+  if (!current.enabled) return {disabled: true, alreadyDisabled: true};
+  if (typeof adapter.disable !== 'function') throw new Error('Task Scheduler disable is unavailable');
+  await adapter.disable(plan);
+  const verified = await inspect(plan, adapter);
+  requireMatchingSpec(verified);
+  if (!verified.exists || !verified.owned || verified.enabled) throw new Error('owned gateway task disable could not be verified');
+  return {disabled: true, alreadyDisabled: false};
+}
+
+export async function enableOwnedGatewayTask(plan, adapter) {
+  const current = await inspect(plan, adapter);
+  requireMatchingSpec(current);
+  if (!current.exists) throw new Error('owned gateway task is not registered');
+  if (!current.owned) throw new Error('gateway task ownership conflict; refusing to enable the task');
+  if (current.enabled) return {enabled: true, alreadyEnabled: true};
+  if (typeof adapter.enable !== 'function') throw new Error('Task Scheduler enable is unavailable');
+  await adapter.enable(plan);
+  const verified = await inspect(plan, adapter);
+  requireMatchingSpec(verified);
+  if (!verified.exists || !verified.owned || !verified.enabled) throw new Error('owned gateway task enable could not be verified');
+  return {enabled: true, alreadyEnabled: false};
 }
 
 export async function unregisterOwnedGatewayTask(plan, adapter) {

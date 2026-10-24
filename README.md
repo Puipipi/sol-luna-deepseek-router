@@ -1,8 +1,12 @@
-# Sol 主控 · 原生 Luna/DeepSeek 峰谷分工
+# Sol 主控 · 多模型峰谷子代理
+
+Canonical skill: `$sol-luna-deepseek-router`.
 
 This repository contains one routing skill and an optional Codex plugin. Sol stays in charge of the current conversation, then routes repository file search and reading, code or document edits, debugging, and tests to native Luna during DeepSeek's official weekday peak windows or to a native DeepSeek child during valley hours. A deterministic Node.js helper evaluates the schedule; Sol interprets user intent and does not send ordinary Q&A through the router. The formal native DeepSeek route uses the isolated `native_deepseek` child role, its own `deepseek-native` provider, and a child-only model catalog. Sol and native Luna continue using their normal provider and live model catalog. DSH remains explicit legacy compatibility. Sol stays responsible for decisions and review. Users can explicitly ask Sol to work directly.
 
 The standalone root `SKILL.md` is the canonical routing policy. The optional plugin adds the native gateway helpers, a guarded legacy DSH MCP wrapper, real DSH event access, and local lifecycle hooks; it does not add a second scheduler, a second DeepSeek client, another agent loop, or any bundled skill. Install and enable exactly one routing skill: the root standalone scheduler.
+
+The optional API panel adds user-configured OpenAI-compatible child profiles. Profiles are immutable; editing creates a new profile ID while existing children keep their original binding. Credentials may use the official DeepSeek account automatically or manual environment/file references, with no fallback to another account or provider. A single API profile is fixed and does not consult the clock; an explicit scheduled plan can assign separate API/Luna/DeepSeek choices to peak and valley. Saving JSON is separate from the explicit Apply action, and a newly applied role requires a full Codex restart. The 0.11.1 MSIX binding and 0.11.2 role registration are recorded in their [installation record](docs/native-api-msix-path-fix-0.11.1-2026-10-19.md) and [fix record](docs/native-api-role-registration-0.11.2-2026-10-19.md). The 0.11.2 catalog failure and 0.11.3 repair/Apply are documented in the [0.11.3 record](docs/native-api-catalog-instructions-0.11.3-2026-10-19.md). The 0.11.3 API child was created, but it returned a generic English response without invoking tools, so the task failed. The 0.11.4 wire-format correction and evidence are in the [agent-message repair record](docs/native-api-agent-message-0.11.4-2026-10-19.md). The one-time API authorization has been consumed; a fresh real acceptance attempt needs new authorization. First-version API children disable Codex built-in web search.
 
 ## Schedule
 
@@ -30,7 +34,7 @@ The command resolves from the plugin root, so it does not depend on the user's w
 The hook injects a concise `hookSpecificOutput.additionalContext` notice:
 
 - once on the first observation for a chat;
-- again only when the effective phase, executor, or override source changes;
+- again only when the effective phase, executor, API profile, or override source changes;
 - never repeatedly for the same phase, including across `UserPromptSubmit` and `PreToolUse`.
 
 A manual one-task choice or sticky chat override wins over the schedule, and the notice reports the effective executor and source. The hook does not create a new chat, start an idle turn, poll in the background, or interrupt an executing task. An idle chat receives nothing until the user or a tool produces the next hook event. Only a new task should use the newly reported route; a running task can finish after a peak boundary.
@@ -126,15 +130,17 @@ The formal native DeepSeek path uses the patched, versioned CLI and the `native_
 
 The formal gateway uses `--deepseek-only`: it rejects GPT/unknown models and encrypted collaboration input before any upstream call, and its relay cap is forced to zero. Dispatch accepts only a health response confirming `deepseek_only=true`, `relay_allowed=false`, and a Running owned Task. Legacy direct gateway mode retains its existing compatibility behavior.
 
-The isolated installer runs an app-server smoke against a temporary Codex home before activation. A formal installation and stable gateway source switch passed on one host; see the [installation record](docs/native-formal-install-2026-10-18.md), [stable gateway acceptance](docs/native-stable-gateway-acceptance-2026-10-18.md), and [0.10.4 package update record](docs/native-plugin-update-0.10.4-2026-10-18.md). The [partial desktop acceptance](docs/native-desktop-partial-acceptance-2026-10-18.md) links the [live route-hook acceptance](docs/native-live-route-hook-acceptance-2026-10-18.md), [real multi-chat acceptance](docs/native-real-multichat-acceptance-2026-10-18.md), and separate [Sol usage window](docs/native-desktop-usage-window-2026-10-18.md), which cover active-chat notices, two real Luna parent chats, and an audited Sol rollout usage interval; new-child discovery, history clickability, cold-start recovery, and full desktop acceptance remain pending. Other hosts require local verification. `activate` reports a configured state and restart requirement; neither status nor a successful smoke proves that the desktop launched or accepted the patched CLI.
+The isolated installer runs an app-server smoke against a temporary Codex home before activation. A formal installation and stable gateway source switch passed on one host; see the [installation record](docs/native-formal-install-2026-10-18.md), [stable gateway acceptance](docs/native-stable-gateway-acceptance-2026-10-18.md), and [0.10.4 package update record](docs/native-plugin-update-0.10.4-2026-10-18.md). The [0.10.5 package update record](docs/native-plugin-update-0.10.5-2026-10-18.md) documents the plugin install and backend activation, and the [bounded retry candidate](docs/native-plugin-candidate-0.10.5-2026-10-18.md) records its GREEN build. This setup is a plugin plus its matching custom open-source Codex CLI, not a plugin-only change; the compressed plugin source archive is about 0.37 MiB and the Windows CLI is about 325.47 MiB. The CLI is based on upstream Codex source licensed under Apache-2.0; the router's MIT license applies to this repository and does not change the CLI's license. This custom CLI is not covered by an official compatibility guarantee.
 
-The formal gateway lifecycle uses an owned current-user Task Scheduler task, with a hidden synchronous launcher; `native-agent.mjs` checks the owned task and gateway health before each DeepSeek dispatch. The [stable gateway acceptance](docs/native-stable-gateway-acceptance-2026-10-18.md) separates a disposable Task-stop probe from the formal graceful source-switch restart and verifies the new process command line against the stable bundle. A later [partial fault acceptance](docs/native-formal-fault-acceptance-2026-10-18.md) records successful recovery and local TCP cases alongside an automatic Task restart that remains unaccepted. These records do not establish desktop child UI acceptance. See also the [lifecycle test receipt](docs/native-gateway-lifecycle-2026-10-18.md). `native-autostart.mjs` remains an optional legacy Startup launcher and is not the formal lifecycle. The native route uses no DSH agent/session/workspace; DSH remains an explicit legacy workflow.
+The [0.10.5 desktop acceptance record](docs/native-desktop-acceptance-0.10.5-2026-10-18.md) documents a full application restart, observation of the new CLI, native child continuation, readiness recovery after a gateway failure, and real DeepSeek tool execution in two main chats. This is host-specific partial acceptance, not a claim that every target is complete. The user confirmed native child discovery, opening the same child panel, same-child follow-up, and automatic progress/result text in the third historical turn; they later pasted the final messages from all three historical turns. The user expanded the new chat-A DeepSeek command card and confirmed its PowerShell script and output (50 bytes, matching SHA-256, exit 0). The first old-demo command card and output were also expanded and matched: its initial lookup targeted an absent old `package.json`, then fell back to the plugin manifest and completed. This is historical tool output, not a current 0.10.5 failure. The 0.10.5 runtime is now observed and the restart requirement was satisfied. The dated desktop record lists host-specific observed behavior and applicable limits; installed-package synchronization and public publication are tracked separately. Other hosts require local verification. The installer `status` fields `runtimeObserved=false` and `desktopAccepted=false` remain conservative static journal diagnostics; the dated desktop record contains the later read-only runtime observation and must not be rewritten into the historical journal.
+
+The formal gateway lifecycle uses an owned current-user Task Scheduler task, with a hidden synchronous launcher; `native-agent.mjs` checks the owned task and gateway health before each DeepSeek dispatch. The [stable gateway acceptance](docs/native-stable-gateway-acceptance-2026-10-18.md) separates a disposable Task-stop probe from the formal graceful source-switch restart and verifies the new process command line against the stable bundle. A later [partial fault acceptance](docs/native-formal-fault-acceptance-2026-10-18.md) records successful recovery and local TCP cases alongside an automatic Task restart that remains unaccepted. The host-specific [0.10.5 desktop record](docs/native-desktop-acceptance-0.10.5-2026-10-18.md) separately documents later child UI and restart observations. See also the [lifecycle test receipt](docs/native-gateway-lifecycle-2026-10-18.md). `native-autostart.mjs` remains an optional legacy Startup launcher and is not the formal lifecycle. The native route uses no DSH agent/session/workspace; DSH remains an explicit legacy workflow.
 
 The older `native-install.mjs` shared-root gateway, global catalog, and transparent GPT relay remain historical compatibility paths. They are not the formal isolated setup route and must not be used as its installation instructions. The old native acceptance record documents that earlier path only; it is not evidence of isolated-role or desktop acceptance.
 
-The formal native child call uses `spawn_agent` with `task_name`, `agent_type: "native_deepseek"`, and `fork_turns: "none"`; omit `model` so the isolated role selects its configured model. If the role is unavailable, stop and report the setup failure. Do not fall back to the shared-root provider, an explicit model override, or another executor. Native writer coordination reserves the workspace before spawn, binds the real child, and releases explicitly; it is not tied to a short-lived CLI PID.
+The formal native child call uses `spawn_agent` with `task_name`, `agent_type: "native_deepseek"`, and `fork_turns: "none"`; omit `model` so the isolated role selects its configured model and fixed `high` reasoning effort. This native route does not inherit the Sol parent’s `xhigh` setting, so an `xhigh` parent request still runs this child at `high`. The current spawn path exposes no per-child effort control. If the role is unavailable, stop and report the setup failure. Do not fall back to the shared-root provider, an explicit model override, or another executor. Native writer coordination reserves the workspace before spawn, binds the real child, and releases explicitly; it is not tied to a short-lived CLI PID.
 
-The evidence in `docs/native-deepseek-acceptance-2026-10-17.md` is historical and covers the earlier shared-provider contract. The host-specific installation record does not establish isolated-role end-to-end or desktop acceptance on other hosts; desktop acceptance remains pending.
+The evidence in `docs/native-deepseek-acceptance-2026-10-17.md` is historical and covers the earlier shared-provider contract. The host-specific [0.10.5 desktop record](docs/native-desktop-acceptance-0.10.5-2026-10-18.md) establishes the observations listed there only; it does not establish acceptance on other hosts or completion of package/skill synchronization and publication.
 
 The legacy DSH MCP/trace path remains explicit and is never an automatic fallback from native DeepSeek.
 
@@ -149,6 +155,8 @@ node .\tests\plugin-trace.test.mjs
 node .\tests\plugin-mcp.test.mjs
 node .\tests\plugin-client.test.mjs
 node .\tests\plugin-manifest.test.mjs
+node .\tests\plugin-router-settings.test.mjs
+node .\tests\plugin-mcp-env.test.mjs
 node .\tests\dsh-mcp-client.test.mjs
 node .\tests\docs.test.mjs
 node .\tests\native-routing.test.mjs
@@ -157,6 +165,14 @@ node .\tests\native-gateway.test.mjs
 node .\tests\native-state.test.mjs
 node .\tests\native-agent.test.mjs
 node .\tests\native-isolated-install.test.mjs
+node .\tests\native-api-settings.test.mjs
+node .\tests\native-api-routing.test.mjs
+node .\tests\native-api-protocol.test.mjs
+node .\tests\native-api-artifacts.test.mjs
+node .\tests\native-api-install.test.mjs
+node .\tests\native-api-lifecycle.test.mjs
+node .\tests\native-api-origin.test.mjs
+node .\tests\native-api-manager.test.mjs
 node .\tests\native-install.test.mjs
 node .\tests\native-manager.test.mjs
 node .\tests\native-autostart.test.mjs
@@ -193,7 +209,7 @@ After this initial plugin installation or a plugin update, reload plugins or res
 
 ### Isolated native DeepSeek setup
 
-Only perform setup when explicitly requested. Follow [the isolated installer guide](docs/native-isolated-install.md) and its staged `prepare` → `status` → `activate` flow. The legacy `native-install.mjs` command is not the formal setup entrypoint. One host-specific installation is recorded in [the dated install record](docs/native-formal-install-2026-10-18.md); other hosts require local verification, and desktop acceptance remains pending. Do not describe a prepared or configured state as desktop acceptance.
+Only perform setup when explicitly requested. Follow [the isolated installer guide](docs/native-isolated-install.md) and its staged `prepare` → `status` → `activate` flow. The legacy `native-install.mjs` command is not the formal setup entrypoint. One host-specific installation and later 0.10.5 desktop observations are recorded in [the dated install record](docs/native-formal-install-2026-10-18.md) and [the 0.10.5 desktop acceptance](docs/native-desktop-acceptance-0.10.5-2026-10-18.md); other hosts require local verification. A prepared or configured state alone is not desktop acceptance.
 
 The installer manages three user environment values, including `SOL_LUNA_NATIVE_INSTALL_JOURNAL`, which lets future DeepSeek chats find the active journal without an explicit CLI flag. Fully exit and restart Codex after activation so new chats inherit the updated environment; a running app does not refresh it. Generic runtime environment plans continue to manage only the original two keys, and older two-key journals remain supported.
 
@@ -206,6 +222,18 @@ npx --yes dsh-subagent-mcp@0.7.0 setup --no-skill --service background
 ```
 
 This registers the upstream MCP server and may prepare its managed background service/dependencies. Reload Codex once after this MCP configuration change so the server is discovered; do not open a new chat just to change the route. Do not run the upstream installer with its default skill installation when this router is active. On Windows, apply the optional console-hide patch only at a maintenance point if you need it.
+
+The generic OpenAI-compatible API executor backend is documented in [docs/native-api-executors.md](docs/native-api-executors.md). The historical 0.10.5/6ec runtime predates generic API support; the matching 48d runtime and 0.11.1/0.11.2 installation records are linked [here](docs/native-api-msix-path-fix-0.11.1-2026-10-19.md) and [here](docs/native-api-role-registration-0.11.2-2026-10-19.md). The 0.11.3 catalog repair and failed real child result are documented [here](docs/native-api-catalog-instructions-0.11.3-2026-10-19.md) and [here](docs/native-api-agent-message-0.11.4-2026-10-19.md). The 0.11.4 wire correction has local tests only; no additional API call is authorized, and `apiVerified` remains false. The earlier `model/list` check did not parse the custom catalog and is not acceptance evidence.
+
+Native children should not send unsolicited user-facing progress updates; only send a short update when blocked or when a human action is needed. Their final reply should be brief, in Simplified Chinese, and state the outcome without hiding failures. Send the parent one concise internal handoff with the diff, tests, and limits rather than duplicating it in the user-facing final. The required Chinese suffix sets language; it does not require progress updates. Refreshing an active API gateway source requires the explicit owned rollback/prepare/activate maintenance path; ordinary profile Apply does not replace the staged source.
+
+The default remains peak Luna / valley DeepSeek. A user-selected API profile is fixed and does not consult the clock; an explicit scheduled plan may use API peak and DeepSeek valley or two API profiles. One-time and sticky selections take precedence, and a failed selected executor is reported without falling back to Luna, DeepSeek, another API, or another DeepSeek account. Local credential availability is not authentication proof.
+
+Saving an API profile only writes router JSON. A compatible, already-staged runtime must be present before the explicit Apply action can install the owned role/provider/catalog/Task transaction; a newly applied role requires a full Codex restart. Existing children keep their original immutable profile. First-version API children disable Codex's built-in web search for both Responses and Chat Completions, and the adapter does not claim to enforce a provider grammar. The historical 6ec runtime reports `runtimeCompatible:false`; generic API readiness requires root role registration, a full restart, and actual child-spawn evidence.
+
+Official DeepSeek API profiles (account or manual env/file credentials) use the documented `none/low/high/max` reasoning levels; the official API docs state that `none` disables thinking. `xhigh` is normalized to `high` in the API adapter and a valid `max` is preserved. The adapter passes `none` through and does not invent a separate `off` value; non-DeepSeek profiles keep their declared efforts. Historical DeepSeek routing behavior is unchanged. This is wire-rule evidence, not a claim that a real generic API role has completed end-to-end acceptance.
+
+The canonical routing skill remains `sol-luna-deepseek-router`; do not add a second skill or delete old cache/backup directories. The agreed visible display name for the next package is “Sol 主控 · 多模型峰谷子代理”; keep the stable registry IDs and folders so a display-name update does not create two enabled skills.
 
 ## Privacy and state
 

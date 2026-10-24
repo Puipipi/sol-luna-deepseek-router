@@ -10,6 +10,14 @@ The separate crash-restart check did not observe the expected Task restart. It e
 
 A separate port-conflict check returned `port_conflict_rejected_and_recovered`; all 18 recorded checks passed, including strict readiness recovery, with the root config, managed environment, Task specification, and gateway identity unchanged. It made zero model API and relay calls. This confirms the explicit readiness path recovered the owned Task after that fault, but does not change the failed automatic-restart result above. Private safe receipt SHA-256: `1521b3c9fb30f58d65263c298ce6068b6fbd859ff16c2f38dd6e3d955f98ecf0`.
 
+## Disposable Task restart diagnostic
+
+A separate disposable owned Task diagnostic preserved its initial `failed_closed` result with `TASK_CLEANUP_NOT_SAFE`: the harness's raw command-line text gate rejected a `sigterm` target, so it did not signal that process. The follow-up reused the same diagnostic Task and verified PID, creation time, executable, and full `CommandLineToArgvW` token equality before sending one signal; the handler was not entered. The diagnostic harness captured the synchronous WSH return code, so its launcher bytes were not identical to the production launcher template.
+
+In the fixed-exit case, the stub and synchronous WSH child both returned 42 once, and the Task stayed `Ready` with `LastTaskResult=42` and the exact owned specification in all 29 polls over 83,675 ms; no second start was observed. In the `sigterm` continuation, there was one signal and one launch, the WSH returned 1, and the Task stayed `Ready` with `LastTaskResult=1` and the exact specification in all 33 polls over 82,845 ms; no second start was observed. Both disposable Tasks were removed, no owned stub remained, and the formal gateway service was untouched. Private safe receipt SHA-256 values: `56f2d0032efc2f1dc7795e9a9e3e3792a44f7e6328b40643a2e4e828ad7738bd` and `fa40ae79494a42eb9b70c1d267ef117287b7584ac40fe78d6eeab65d80ab2b05`.
+
+This diagnostic does not establish the formal Task's restart root cause and does not make OS `RestartOnFailure` a dependable recovery mechanism. The accepted recovery path remains the existing readiness and dispatch gate; it was observed to recover in the formal readiness checks above. The root Codex connection remains independent.
+
 ## Local TCP transport checks
 
 The new [transport fault test](../tests/native-transport-faults.test.mjs) passed 26 assertions using the production gateway in a hidden, independent Node child with its default `fetch` and a dummy auth resolver. A private empty DSH home isolated the child. The test exercised only loopback TCP: a closed-port refusal returned 502; a listener that accepted and then closed the socket returned 502; and an accepted request whose server withheld response headers returned 504 and caused the socket to close. The same gateway then returned a dummy 200 response after each fault.

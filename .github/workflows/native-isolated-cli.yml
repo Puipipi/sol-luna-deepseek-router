@@ -11,7 +11,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 180
     env:
-      STABLE_GIT_COMMIT: 4ebc485ca321243727539187169425fcf972f2c4
+      STABLE_GIT_COMMIT: 6905ecede7816e91373e9eabda3f6b0368fc747b
+      EXPECTED_PATCH_SHA256: d0cb44027e64296045dfa26dbc79ed878ee8b5feee325267640c6337b9c8e76e
       CARGO_BUILD_JOBS: 2
       LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -22,7 +23,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: openai/codex
-          ref: 4ebc485ca321243727539187169425fcf972f2c4
+          ref: 6905ecede7816e91373e9eabda3f6b0368fc747b
           persist-credentials: false
 
       - name: Check out this repository for the reviewed patch
@@ -33,7 +34,7 @@ jobs:
       - name: Verify source and apply required custom patch
         shell: pwsh
         run: |
-          $expected = '4ebc485ca321243727539187169425fcf972f2c4'
+          $expected = '6905ecede7816e91373e9eabda3f6b0368fc747b'
           $actual = (git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) {
             throw "Unexpected upstream revision: $actual (expected $expected)"
@@ -43,6 +44,10 @@ jobs:
           if (-not (Test-Path -LiteralPath $patch -PathType Leaf)) {
             Write-Error 'Required patch is missing: router/patches/native-isolated-cli.patch. Add the reviewed patch before running this workflow.'
             exit 1
+          }
+          $patchHash = (Get-FileHash -LiteralPath $patch -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($patchHash -ne $env:EXPECTED_PATCH_SHA256) {
+            throw "Unexpected patch SHA-256: $patchHash (expected $env:EXPECTED_PATCH_SHA256)"
           }
           git apply --check -- $patch
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -101,6 +106,7 @@ jobs:
           key: windows-rust-1.95-${{ env.STABLE_GIT_COMMIT }}-${{ hashFiles('router/patches/native-isolated-cli.patch', 'codex-rs/Cargo.lock') }}
           restore-keys: |
             windows-rust-1.95-${{ env.STABLE_GIT_COMMIT }}-
+            windows-rust-1.95-
 
       - name: Restore legacy debug-only Cargo cache
         if: ${{ steps.cargo-cache.outputs.cache-matched-key == '' }}
@@ -114,6 +120,7 @@ jobs:
           key: windows-rust-1.95-${{ env.STABLE_GIT_COMMIT }}-${{ hashFiles('router/patches/native-isolated-cli.patch', 'codex-rs/Cargo.lock') }}
           restore-keys: |
             windows-rust-1.95-${{ env.STABLE_GIT_COMMIT }}-
+            windows-rust-1.95-
 
       - name: Run Cargo.lock normalizer test
         shell: pwsh
@@ -123,6 +130,19 @@ jobs:
           node $testPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Run Responses WebSocket metadata tests
+        shell: pwsh
+        working-directory: codex-rs
+        run: |
+          $output = cargo test --locked -p codex-api endpoint::responses_websocket::tests --lib 2>&1
+          $testExit = $LASTEXITCODE
+          $outputText = $output | Out-String
+          Write-Output $outputText
+          if ($outputText -notmatch '(?m)^running [1-9]\d* tests?\r?$') {
+            throw 'Expected Responses WebSocket unit tests to execute.'
+          }
+          if ($testExit -ne 0) { exit $testExit }
+
       - name: Run protocol wire-alias tests
         shell: pwsh
         working-directory: codex-rs
@@ -131,11 +151,81 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run core native DeepSeek tests
+        id: core-native-deepseek-tests
         shell: pwsh
         working-directory: codex-rs
         run: |
-          cargo test --locked -p codex-core native_deepseek --lib
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $output = cargo test --locked -p codex-core native_deepseek --lib -- --skip native_api_ 2>&1
+          $testExit = $LASTEXITCODE
+          $outputText = $output | Out-String
+          Write-Output $outputText
+          $diagnosticPath = Join-Path $env:RUNNER_TEMP "core-native-deepseek-tests-${env:GITHUB_RUN_ID}.log"
+          [System.IO.File]::WriteAllText($diagnosticPath, $outputText, [System.Text.UTF8Encoding]::new($false))
+          if ($testExit -ne 0) { exit $testExit }
+
+      - name: Upload core native DeepSeek test diagnostics
+        if: ${{ failure() && steps.core-native-deepseek-tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-native-deepseek-tests-${{ github.run_id }}
+          path: ${{ runner.temp }}/core-native-deepseek-tests-${{ github.run_id }}.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Run native API profile tests
+        id: native-api-profile-tests
+        shell: pwsh
+        working-directory: codex-rs
+        run: |
+          $output = cargo test --locked -p codex-core native_api --lib 2>&1
+          $testExit = $LASTEXITCODE
+          $outputText = $output | Out-String
+          Write-Output $outputText
+          $diagnosticPath = Join-Path $env:RUNNER_TEMP "native-api-tests-${env:GITHUB_RUN_ID}.log"
+          [System.IO.File]::WriteAllText($diagnosticPath, $outputText, [System.Text.UTF8Encoding]::new($false))
+          if ($outputText -notmatch '(?m)^running (\d+) tests?\r?$') {
+            throw 'Expected the native API profile tests to report a test count.'
+          }
+          $count = [int]$matches[1]
+          if ($count -ne 8) {
+            throw "Expected 8 native API profile tests, ran $count."
+          }
+          if ($testExit -ne 0) { exit $testExit }
+
+      - name: Upload native API test diagnostics
+        if: ${{ failure() && steps.native-api-profile-tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-api-tests-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-api-tests-${{ github.run_id }}.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Run bounded retry role regression
+        shell: pwsh
+        working-directory: codex-rs
+        run: |
+          $output = cargo test --locked -p codex-core agent::role::tests::apply_role_can_disable_unbounded_connection_retries_without_changing_parent --lib -- --exact 2>&1
+          $testExit = $LASTEXITCODE
+          $outputText = $output | Out-String
+          Write-Output $outputText
+          if ($testExit -ne 0) { exit $testExit }
+          if ($outputText -notmatch '(?m)^running 1 test\r?$') {
+            throw 'Expected the bounded retry regression to run exactly one test.'
+          }
+
+      - name: Run native API main profile regression
+        shell: pwsh
+        working-directory: codex-rs
+        run: |
+          $output = cargo test --locked -p codex-core agent::native_deepseek::tests::native_api_profile_child_uses_owned_provider_and_catalog_without_changing_parent --lib -- --exact 2>&1
+          $testExit = $LASTEXITCODE
+          $outputText = $output | Out-String
+          Write-Output $outputText
+          if ($outputText -notmatch '(?m)^running 1 test\r?$') {
+            throw 'Expected the native API profile regression to run exactly one test.'
+          }
+          if ($testExit -ne 0) { exit $testExit }
 
       - name: Build release CLI
         shell: pwsh
@@ -192,7 +282,7 @@ jobs:
             cargo_lock_original_sha256 = $lockAudit.original_lock_sha256
             cargo_lock_sha256 = $lockAudit.normalized_lock_sha256
             cargo_lock_diff = $lockAudit.lock_diff
-            tests = @('cargo test --locked -p codex-protocol sol_luna_wire_aliases --lib', 'cargo test --locked -p codex-core native_deepseek --lib')
+            tests = @('cargo test --locked -p codex-protocol sol_luna_wire_aliases --lib', 'cargo test --locked -p codex-core native_deepseek --lib -- --skip native_api_', 'cargo test --locked -p codex-core native_api --lib', 'cargo test --locked -p codex-core agent::role::tests::apply_role_can_disable_unbounded_connection_retries_without_changing_parent --lib -- --exact', 'cargo test --locked -p codex-core agent::native_deepseek::tests::native_api_profile_child_uses_owned_provider_and_catalog_without_changing_parent --lib -- --exact')
             build = 'cargo build -p codex-cli --locked --release --bin codex'
           }
           $provenance | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $artifact 'provenance.json') -Encoding utf8

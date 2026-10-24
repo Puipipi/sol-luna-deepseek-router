@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } fr
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { defaultNativeApiDir } from "../scripts/native-api-manager.mjs";
 import { cleanupOwnedGatewaySourceStage, stageGatewaySource, verifyGatewaySource } from "../scripts/native-gateway-source.mjs";
 
 const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "native-gateway-source-test-")));
@@ -42,6 +43,27 @@ try {
   assertions += 1;
   await assert.rejects(() => verifyGatewaySource(staged, { runtimeRoot: "." }), /absolute/i);
   assertions += 1;
+
+  const msixLikeLocal = path.join(root, "AppData", "Local");
+  const msixLikeTarget = path.join(msixLikeLocal, "Packages", "OpenAI.Codex_2p2nqsd0c76g0", "LocalCache", "Local", "sol-luna-deepseek-router", "native-api");
+  const msixLikeAlias = path.join(msixLikeLocal, "sol-luna-deepseek-router", "native-api");
+  await mkdir(msixLikeTarget, { recursive: true });
+  let msixAliasCreated = false;
+  try {
+    await mkdir(path.dirname(msixLikeAlias), { recursive: true });
+    await symlink(msixLikeTarget, msixLikeAlias, "junction");
+    msixAliasCreated = true;
+  } catch (error) {
+    if (!new Set(["EPERM", "EACCES", "ENOTSUP"]).has(error.code)) throw error;
+  }
+  if (msixAliasCreated) {
+    equal(defaultNativeApiDir({ LOCALAPPDATA: msixLikeLocal }), msixLikeAlias,
+      "default API root keeps a real MSIX-shaped junction at its nominal path");
+    await assert.rejects(() => verifyGatewaySource(staged, { runtimeRoot: msixLikeAlias }), /regular directory|reparse point/i);
+    assertions += 1;
+    await assert.rejects(() => stageGatewaySource({ pluginRoot: sameContentPlugin, runtimeRoot: msixLikeAlias }), /regular directory|reparse point/i);
+    assertions += 1;
+  }
 
   const conflictRoot = path.join(root, "conflict-runtime");
   const conflictDirectory = path.join(conflictRoot, staged.relativeDirectory);

@@ -12,6 +12,7 @@ const SCRIPT_NAMES = Object.freeze([
   "native-routing.mjs",
   "native-usage.mjs",
 ]);
+const DEFAULT_ENTRY = "scripts/native-gateway.mjs";
 const MANAGED_FILES = SCRIPT_NAMES.map((name) => `scripts/${name}`);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -49,10 +50,14 @@ function contentDigest(files) {
   return sha256(Buffer.from(canonicalJson({ schema: MANIFEST_SCHEMA, files })));
 }
 
+function isValidEntry(entry) {
+  return typeof entry === "string" && /^scripts\/[A-Za-z0-9._-]+\.mjs$/.test(entry);
+}
+
 async function verifyManifestBundle(directory, ref) {
   if (!ref || ref.schema !== REF_SCHEMA || !/^[a-f0-9]{64}$/.test(ref.contentDigest ?? "")
       || ref.relativeDirectory !== `gateway-source/${ref.contentDigest}`
-      || ref.entry !== "scripts/native-gateway.mjs" || !/^[a-f0-9]{64}$/.test(ref.manifestSha256 ?? "")) {
+      || !isValidEntry(ref.entry) || !/^[a-f0-9]{64}$/.test(ref.manifestSha256 ?? "")) {
     throw new Error("gateway source bundle reference is invalid");
   }
   const bytes = await requireRegularFile(directory, MANIFEST_NAME, "gateway source manifest");
@@ -63,11 +68,17 @@ async function verifyManifestBundle(directory, ref) {
     throw new Error("gateway source manifest identity is invalid");
   }
   const names = manifest.files.map((item) => item?.path);
-  if (JSON.stringify(names) !== JSON.stringify(MANAGED_FILES)) throw new Error("gateway source bundle file list is not canonical");
+  if (names.length === 0 || new Set(names).size !== names.length
+      || names.some((name) => !isValidEntry(name))
+      || JSON.stringify(names) !== JSON.stringify([...names].sort())
+      || !names.includes(ref.entry)) throw new Error("gateway source bundle file list is not canonical");
   if (manifest.files.some((item) => !/^[a-f0-9]{64}$/.test(item?.sha256 ?? "")) || contentDigest(manifest.files) !== ref.contentDigest) {
     throw new Error("gateway source bundle digest is invalid");
   }
-  const expected = new Set([...MANAGED_FILES, MANIFEST_NAME]);
+  if (Array.isArray(ref.files) && JSON.stringify(manifest.files) !== JSON.stringify(ref.files)) {
+    throw new Error("gateway source bundle file list changed from its reference");
+  }
+  const expected = new Set([...manifest.files.map((item) => item.path), MANIFEST_NAME]);
   const found = new Set();
   async function walk(current, relative = "") {
     for (const item of await readdir(current, { withFileTypes: true })) {
@@ -106,11 +117,11 @@ export async function verifyGatewaySource(ref, { runtimeRoot } = {}) {
 }
 
 export function gatewaySourceEntry(ref, runtimeRoot) {
-  if (typeof runtimeRoot !== "string" || !path.isAbsolute(runtimeRoot) || typeof ref?.relativeDirectory !== "string") {
+  if (typeof runtimeRoot !== "string" || !path.isAbsolute(runtimeRoot) || typeof ref?.relativeDirectory !== "string" || !isValidEntry(ref?.entry)) {
     throw new Error("gateway source reference and absolute runtimeRoot are required");
   }
   if (!/^[a-f0-9]{64}$/.test(ref.contentDigest ?? "") || ref.relativeDirectory !== `gateway-source/${ref.contentDigest}`
-      || ref.entry !== "scripts/native-gateway.mjs") throw new Error("gateway source bundle reference is invalid");
+      ) throw new Error("gateway source bundle reference is invalid");
   return path.resolve(path.resolve(runtimeRoot), ...ref.relativeDirectory.split("/"), ...ref.entry.split("/"));
 }
 
@@ -136,16 +147,24 @@ export async function cleanupOwnedGatewaySourceStage(storePath, temporaryPath) {
   await rm(temporary, { recursive: true, force: true });
 }
 
-export async function stageGatewaySource({ pluginRoot, runtimeRoot } = {}) {
+export async function stageGatewaySource({ pluginRoot, runtimeRoot, sourceFiles: requestedFiles = SCRIPT_NAMES, entry = DEFAULT_ENTRY } = {}) {
   if (typeof pluginRoot !== "string" || !path.isAbsolute(pluginRoot)
       || typeof runtimeRoot !== "string" || !path.isAbsolute(runtimeRoot)) {
     throw new Error("pluginRoot and runtimeRoot must be absolute to stage gateway source");
   }
+  if (!isValidEntry(entry)) throw new Error("gateway source entry must be a scripts/*.mjs path");
+  const sourceNames = [...requestedFiles];
+  if (sourceNames.length === 0 || new Set(sourceNames).size !== sourceNames.length
+      || sourceNames.some((name) => typeof name !== "string" || path.basename(name) !== name || !name.endsWith(".mjs"))) {
+    throw new Error("gateway source file list must contain unique script filenames");
+  }
+  const managedFiles = sourceNames.map((name) => `scripts/${name}`).sort();
+  if (!managedFiles.includes(entry)) throw new Error("gateway source entry must be part of its file list");
   const sourceRoot = await requireCanonicalDirectory(pluginRoot, "pluginRoot");
   const scriptsRoot = path.join(sourceRoot, "scripts");
   await requireCanonicalDirectory(scriptsRoot, "plugin scripts directory");
   const sourceFiles = [];
-  for (const relative of MANAGED_FILES) {
+  for (const relative of managedFiles) {
     const bytes = await requireRegularFile(sourceRoot, relative, "plugin gateway source");
     sourceFiles.push({ path: relative, bytes });
   }
@@ -166,7 +185,7 @@ export async function stageGatewaySource({ pluginRoot, runtimeRoot } = {}) {
     schema: REF_SCHEMA,
     contentDigest: digest,
     relativeDirectory,
-    entry: "scripts/native-gateway.mjs",
+    entry,
     manifestSha256: sha256(manifestBytes),
   };
   let finalExists = false;

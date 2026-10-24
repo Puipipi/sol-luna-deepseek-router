@@ -1,0 +1,1369 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>路由设置</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --surface: var(--color-background-primary, #ffffff);
+  --surface-2: var(--color-background-secondary, #f5f6f8);
+  --surface-3: var(--color-background-tertiary, #eceef2);
+  --text: var(--color-text-primary, #17181c);
+  --muted: var(--color-text-secondary, #5f6470);
+  --faint: var(--color-text-tertiary, #8b909b);
+  --line: var(--color-border-primary, #d9dce3);
+  --line-soft: var(--color-border-secondary, #e6e8ee);
+  --accent: #4d6bfe;
+  --accent-soft: color-mix(in srgb, var(--accent) 11%, transparent);
+  --danger: var(--color-text-danger, #b42318);
+  --danger-soft: color-mix(in srgb, var(--danger) 10%, transparent);
+  --ok: var(--color-text-success, #16794b);
+  --warn: var(--color-text-warning, #8a5a00);
+  --radius: 10px;
+  --font: var(--font-sans, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif);
+  --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  background: var(--surface);
+  color: var(--text);
+  font: 14px/1.5 var(--font);
+  padding: 18px;
+}
+main { max-width: 760px; margin: 0 auto; }
+.top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.eyebrow {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font: 600 11px/1.2 var(--mono);
+  letter-spacing: .13em;
+}
+h1 { margin: 0; font-size: 24px; line-height: 1.15; letter-spacing: -.02em; }
+.lede { margin: 7px 0 0; color: var(--muted); max-width: 44ch; }
+h2 { margin: 0; font-size: 15px; line-height: 1.3; }
+p { margin: 0; }
+button, input, select { font: inherit; }
+button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+button:hover { background: var(--surface-2); }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+button.primary:hover { filter: brightness(1.06); }
+button.ghost { background: transparent; }
+button.small { min-height: 28px; padding: 3px 9px; font-size: 12px; }
+.status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 1px;
+  margin: 18px 0 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--line-soft);
+}
+.status-item {
+  display: grid;
+  grid-template-columns: 8px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+.status-item .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--faint); margin-top: 7px; grid-row: 1;
+}
+.status-item span:not(.dot) { color: var(--muted); font-size: 12px; }
+.status-item strong { grid-column: 2; font-size: 13px; font-weight: 600; }
+.status-item[data-state="saved"] .dot, .status-item[data-state="on"] .dot { background: var(--ok); }
+.status-item[data-state="pending"] .dot { background: var(--warn); }
+.status-item[data-state="unknown"] .dot, .status-item[data-state="off"] .dot { background: var(--faint); }
+.status-detail { margin: -2px 0 14px; color: var(--muted); font-size: 12px; }
+.notice, .warning {
+  margin: 0 0 14px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 13px;
+}
+.notice:empty { display: none; }
+.notice.error, .warning.error {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 25%, transparent);
+}
+.warning { color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, transparent); }
+.warning[hidden] { display: none; }
+.block, .subblock {
+  margin: 0 0 12px;
+  padding: 13px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.block[hidden], .subblock[hidden] { display: none; }
+#profile-form > fieldset.subblock:first-of-type { margin-block-start: 16px; }
+#profile-form > fieldset.subblock:first-of-type > legend {
+  padding: 0 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+legend {
+  padding: 0 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+.mode-option {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.mode-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.mode-option input { margin: 3px 0 0; accent-color: var(--accent); }
+.mode-option b { display: block; font-size: 13px; }
+.mode-option small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+.field { display: grid; gap: 5px; min-width: 0; }
+.field > span { color: var(--muted); font-size: 12px; }
+input, select {
+  width: 100%;
+  min-height: 35px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+}
+input::placeholder { color: var(--faint); }
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr);
+  gap: 8px;
+  align-items: end;
+}
+.pair-mark { color: var(--faint); text-align: center; padding-bottom: 9px; font-size: 15px; }
+.hint { margin-top: 8px; color: var(--faint); font-size: 12px; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0 20px; }
+.dirty { color: var(--warn); font-size: 12px; }
+.profiles, .editor, .apply { border-top: 1px solid var(--line-soft); padding-top: 16px; margin-top: 16px; }
+.section-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.section-head p { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.profile-list { display: grid; gap: 7px; margin-top: 12px; }
+.profile-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.profile-row strong { display: block; font-size: 13px; }
+.profile-row .meta { margin-top: 2px; color: var(--muted); font-size: 12px; }
+.profile-row .mono { color: var(--faint); font: 11px/1.4 var(--mono); margin-top: 3px; word-break: break-all; }
+.profile-chip {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  vertical-align: 1px;
+}
+.empty { margin-top: 10px; color: var(--faint); font-size: 12px; }
+.editor[hidden] { display: none; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.field.wide { grid-column: 1 / -1; }
+.advanced {
+  margin: 0 0 12px;
+  padding: 10px 13px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+}
+.advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.advanced[open] summary { margin-bottom: 9px; }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 9px; }
+.checks label { display: inline-flex; gap: 5px; align-items: center; color: var(--muted); font-size: 12px; }
+.checks input { width: auto; min-height: auto; accent-color: var(--accent); }
+.check-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 9px; }
+.check-result { font-size: 12px; color: var(--muted); }
+.check-result.ok { color: var(--ok); }
+.check-result.bad { color: var(--danger); }
+.pending { margin-top: 10px; color: var(--warn); font-size: 12px; }
+.warn-inline { color: var(--warn); }
+footer { margin-top: 22px; padding-top: 12px; border-top: 1px solid var(--line-soft); color: var(--faint); font-size: 11px; }
+footer p + p { margin-top: 3px; }
+@media (max-width: 520px) {
+  body { padding: 13px; }
+  .top { align-items: center; }
+  .mode-grid { grid-template-columns: 1fr; }
+  .status { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
+  .pair { grid-template-columns: 1fr; }
+  .pair-mark { display: none; }
+  .profile-row { grid-template-columns: 1fr; }
+  .profile-row button { justify-self: start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <div>
+      <p class="eyebrow">SOL / ROUTER</p>
+      <h1>路由设置</h1>
+      <p class="lede">给新任务选择执行器。保存路由会立即关闭新分工，并请求清理本插件拥有的空闲后台执行器；API 配置应用仍需单独操作。</p>
+    </div>
+    <button id="refresh" class="ghost small" type="button">重新载入</button>
+  </header>
+
+  <section class="status" aria-label="配置状态">
+    <div class="status-item" id="save-status" data-state="unknown">
+      <span class="dot" aria-hidden="true"></span><span>已保存</span><strong id="save-state">读取中</strong>
+    </div>
+    <div class="status-item" id="install-status" data-state="unknown">
+      <span class="dot" aria-hidden="true"></span><span>执行器状态</span><strong id="install-state">未知</strong>
+    </div>
+    <div class="status-item" id="restart-status" data-state="unknown">
+      <span class="dot" aria-hidden="true"></span><span>需重启</span><strong id="restart-state">未知</strong>
+    </div>
+    <div class="status-item" id="gateway-status" data-state="unknown">
+      <span class="dot" aria-hidden="true"></span><span>本地网关</span><strong id="gateway-state">未知</strong>
+    </div>
+    <div class="status-item" id="verify-status" data-state="off">
+      <span class="dot" aria-hidden="true"></span><span>API 调用</span><strong id="verify-state">未验证</strong>
+    </div>
+  </section>
+  <p id="executor-status-detail" class="status-detail" aria-live="polite">生命周期状态未接入；未启动服务或模型，未验证 API。</p>
+  <p id="restart-adoption-note" class="status-detail">新增角色应用后需要完整重启；当前采用状态无法自动确认。</p>
+
+  <div id="host-warning" class="warning" role="alert" hidden></div>
+  <div id="notice" class="notice" role="status" aria-live="polite"></div>
+  <section class="block" aria-labelledby="diagnostics-title">
+    <div class="section-head"><div><h2 id="diagnostics-title">连接诊断</h2><p>仅点击后读取有限的本地错误分类，不调用模型或 API。</p></div>
+      <button id="connection-diagnostics" class="ghost small" type="button">运行连接诊断</button></div>
+    <output id="connection-diagnostics-result" class="status-detail" aria-live="polite"></output>
+  </section>
+
+  <form id="router-form" novalidate>
+    <div class="check-row" style="margin-bottom:14px">
+      <label class="check-row"><input id="router-enabled" type="checkbox"><span>启用自动子代理分工</span></label>
+      <span class="hint">关闭时保留全部设置并停止新派发；本插件会停用已确认所有权的空闲网关，活动任务结束后再清理，并仅解除本插件拥有的 CLI 覆盖供下次启动使用官方 Codex。当前进程不热切换；失败可再次保存关闭状态重试。</span>
+    </div>
+    <fieldset class="block">
+      <legend>模式</legend>
+      <div class="mode-grid" role="radiogroup" aria-label="路由模式">
+        <label class="mode-option">
+          <input type="radio" name="mode" value="auto">
+          <span><b>自动峰谷</b><small>高峰 Luna，低谷 DeepSeek</small></span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="mode" value="fixed">
+          <span><b>固定执行器</b><small>不按峰谷切换</small></span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="mode" value="scheduled">
+          <span><b>自定义峰谷</b><small>为峰、谷分别选择</small></span>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="block" id="fixed-block" hidden>
+      <legend>固定执行器</legend>
+      <label class="field"><span>执行器</span><select id="fixed-executor"></select></label>
+    </fieldset>
+
+    <fieldset class="block" id="schedule-block" hidden>
+      <legend>峰谷配对</legend>
+      <div class="pair">
+        <label class="field"><span>高峰</span><select id="peak-executor"></select></label>
+        <span class="pair-mark" aria-hidden="true">↕</span>
+        <label class="field"><span>低谷</span><select id="valley-executor"></select></label>
+      </div>
+      <p class="hint">高峰和低谷只读取这一对选择；固定模式不使用它们。</p>
+    </fieldset>
+
+    <div class="actions">
+      <button id="save-route" type="submit" class="primary">保存路由</button>
+      <button id="reload-route" type="button" class="ghost" hidden>重新载入</button>
+      <span id="dirty" class="dirty" aria-live="polite"></span>
+    </div>
+  </form>
+
+  <section class="profiles">
+    <div class="section-head">
+      <div>
+        <h2>API 配置</h2>
+        <p>每个配置是不可变版本；编辑会生成新 ID，旧版本保留。</p>
+      </div>
+      <button id="new-profile" class="ghost small" type="button">新增配置</button>
+    </div>
+    <div id="profile-list" class="profile-list"></div>
+    <p id="profile-empty" class="empty" hidden>还没有 API 配置。自动账号路径保持原样。</p>
+    <p id="profiles-pending" class="pending" hidden></p>
+  </section>
+
+  <form id="profile-form" class="editor" hidden novalidate>
+    <div class="section-head">
+      <div>
+        <h2 id="editor-title">新增 API 配置</h2>
+        <p id="editor-subtitle">只保存引用，不保存真实密钥。</p>
+      </div>
+      <button id="cancel-profile" class="ghost small" type="button">取消</button>
+    </div>
+    <div class="form-grid">
+        <label class="field"><span>名称</span><input id="profile-label" autocomplete="off" placeholder="例如 MiMo"></label>
+        <label class="field"><span>服务预设</span><select id="api-provider-preset">
+          <option value="">自定义</option>
+          <option value="openai">OpenAI 官方</option>
+          <option value="compatible">OpenAI 兼容 / 通用</option>
+          <option value="deepseek">DeepSeek 官方</option>
+        </select></label>
+      <label class="field"><span>协议</span><select id="profile-protocol">
+        <option value="responses">Responses</option>
+        <option value="chat_completions">Chat Completions</option>
+      </select></label>
+      <label class="field wide"><span>Base URL</span><input id="profile-base-url" inputmode="url" autocomplete="off" placeholder="https://api.example.com/v1"></label>
+        <label class="field"><span>模型</span><input id="profile-model" autocomplete="off" placeholder="精确 wire model"></label>
+        <div class="field wide">
+          <span>模型发现（手动触发）</span>
+          <div class="check-row">
+            <button id="get-api-models" type="button" class="ghost small">获取模型列表</button>
+            <select id="api-discovered-models" aria-label="已发现的模型" hidden><option value="">选择已发现模型</option></select>
+          </div>
+          <small class="hint">仅在点击后连接当前 Base URL；失败时保留手动填写的模型名。</small>
+        </div>
+      <label class="field"><span>别名</span><input id="profile-aliases" autocomplete="off" placeholder="逗号分隔，可留空"></label>
+    </div>
+
+    <fieldset class="subblock">
+      <legend>推理参数</legend>
+      <div class="form-grid">
+        <label class="field"><span>默认强度</span><select id="reasoning-default"></select></label>
+        <label class="field"><span>参数名</span><select id="reasoning-parameter">
+          <option value="none">none</option>
+          <option value="reasoning_effort">reasoning_effort</option>
+          <option value="reasoning">reasoning</option>
+        </select></label>
+      </div>
+      <p class="hint">参数名 none 表示不发送推理参数并使用供应商默认值，不保证关闭 thinking；关闭 DeepSeek thinking 请选择 reasoning 或 reasoning_effort，并把强度设为 none。</p>
+      <div id="reasoning-supported" class="checks" aria-label="支持的推理强度"></div>
+    </fieldset>
+
+    <fieldset class="subblock">
+      <legend>凭据来源</legend>
+      <div class="form-grid">
+        <label class="field"><span>来源</span><select id="credential-type">
+          <option value="dsh_account">DeepSeek 自动账号</option>
+          <option value="env">环境变量</option>
+          <option value="file">密钥文件</option>
+        </select></label>
+        <label class="field" id="credential-name-field"><span>变量名</span><input id="credential-name" autocomplete="off" placeholder="MIMO_API_KEY"></label>
+        <label class="field wide" id="credential-path-field" hidden><span>密钥文件路径</span><input id="credential-path" autocomplete="off" placeholder="绝对路径；页面不回显文件内容"></label>
+      </div>
+      <div class="check-row">
+        <button id="check-credential" type="button" class="ghost small">检查本地凭据</button>
+        <output id="credential-result" class="check-result" aria-live="polite"></output>
+      </div>
+      <p class="hint">只检查本地是否可用，不发起 API 请求，也不声称认证成功。</p>
+    </fieldset>
+
+    <details class="advanced" open>
+      <summary>高级</summary>
+      <div class="form-grid">
+        <label class="field"><span>上下文预算（tokens）</span><input id="profile-context-window" type="number" min="1024" max="2000000" step="1" inputmode="numeric" placeholder="128000"></label>
+      </div>
+      <p class="hint">新配置默认 128000；按所选模型的上下文上限设置。这是工作预算，不代表探测到的模型真实上限；留空则不写入该字段。</p>
+      <p id="context-window-note" class="hint warn-inline" hidden></p>
+    </details>
+
+    <div class="actions">
+      <button id="save-profile" type="submit" class="primary">保存新版本</button>
+      <button id="reload-profile" type="button" class="ghost" hidden>重新载入</button>
+    </div>
+    <p class="pending" id="profile-pending" hidden></p>
+  </form>
+
+  <section class="apply">
+    <div class="section-head">
+      <div>
+        <h2>应用 API 配置</h2>
+        <p>只在你点击后调用生命周期接口；不会自动下载或安装 runtime，也不会关闭或重启 Codex。</p>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="apply-api" type="button" class="ghost" disabled>应用 API 配置</button>
+      <output id="apply-result" class="check-result" aria-live="polite"></output>
+    </div>
+    <p id="apply-explanation" class="hint">当前 runtime 未提供 API 配置应用接口；不会自动下载或安装 runtime，也不会关闭或重启 Codex。</p>
+  </section>
+
+  <footer>
+    <p>默认生命周期状态为未知；接入只读状态模块后显示真实安装、网关与验证结果。</p>
+    <p>应用 API 配置只会在你点击后调用；不会自动下载或安装 runtime，也不会关闭或重启 Codex，也不代表 API 已验证。</p>
+  </footer>
+</main>
+<script>
+(() => {
+  "use strict";
+  const RESOURCE_URI = "ui://router/settings";
+  const EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"];
+  const state = {
+    snapshot: null,
+    editing: null,
+    hostCapabilities: null,
+    hostContext: null,
+    pending: new Map(),
+    nextId: 1,
+    busy: false,
+    dirty: false,
+  };
+  let resizeObserver = null;
+  let sizeFrame = 0;
+  let lastSize = {width: 0, height: 0};
+  let statusRequest = 0;
+
+  const byId = id => document.getElementById(id);
+  const modeInputs = [...document.querySelectorAll('input[name="mode"]')];
+
+  function text(value) {
+    return typeof value === "string" ? value : "";
+  }
+
+  function messageOf(error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  function setNotice(message, kind) {
+    const node = byId("notice");
+    node.textContent = text(message);
+    node.className = `notice${kind ? ` ${kind}` : ""}`;
+  }
+
+  function setHostWarning(message) {
+    const node = byId("host-warning");
+    node.textContent = text(message);
+    node.hidden = !message;
+  }
+
+  function setBusy(busy) {
+    state.busy = busy;
+    for (const node of document.querySelectorAll("button, input, select")) {
+      if (node.dataset.alwaysEnabled === "true") continue;
+      node.disabled = busy || !state.hostCapabilities?.serverTools;
+    }
+    renderApplyAvailability();
+  }
+
+  function renderApplyAvailability() {
+    const supported = state.snapshot?.capabilities?.applyApiConfiguration === true;
+    const ready = Boolean(state.hostCapabilities?.serverTools && state.snapshot && !state.busy);
+    byId("apply-api").disabled = !supported || !ready || state.dirty;
+    if (!state.snapshot) {
+      byId("apply-explanation").textContent = "配置尚未载入；应用接口暂不可用。";
+    } else if (!supported) {
+      byId("apply-explanation").textContent = "当前 runtime 未提供 API 配置应用接口；不会自动下载或安装 runtime，也不会关闭或重启 Codex。";
+    } else if (state.busy) {
+      byId("apply-explanation").textContent = "正在应用…";
+    } else if (state.dirty) {
+      byId("apply-explanation").textContent = "有未保存的路由更改；先保存后再应用。";
+    } else {
+      byId("apply-explanation").textContent = "仅在你点击后调用已注入的生命周期应用接口；不会自动下载或安装 runtime，也不会关闭或重启 Codex。";
+    }
+  }
+
+  function applyHostContext(context) {
+    if (!context || typeof context !== "object") return;
+    state.hostContext = {...(state.hostContext || {}), ...context};
+    if (context.theme === "dark" || context.theme === "light") {
+      document.documentElement.dataset.theme = context.theme;
+      document.documentElement.style.colorScheme = context.theme;
+    }
+    const variables = context.styles?.variables;
+    if (variables && typeof variables === "object") {
+      for (const [key, value] of Object.entries(variables)) {
+        if (typeof value === "string" && key.startsWith("--")) {
+          document.documentElement.style.setProperty(key, value);
+        }
+      }
+    }
+  }
+
+  function request(method, params) {
+    if (!window.parent || window.parent === window) {
+      return Promise.reject(new Error("没有可用的宿主父窗口。"));
+    }
+    const id = state.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        state.pending.delete(id);
+        reject(new Error(`宿主未在时限内响应 ${method}。`));
+      }, 12000);
+      state.pending.set(id, {
+        resolve: value => { clearTimeout(timer); resolve(value); },
+        reject: error => { clearTimeout(timer); reject(error); },
+      });
+      window.parent.postMessage({jsonrpc: "2.0", id, method, params: params || {}}, "*");
+    });
+  }
+
+  function notify(method, params) {
+    if (!window.parent || window.parent === window) return;
+    window.parent.postMessage({jsonrpc: "2.0", method, params: params || {}}, "*");
+  }
+
+  function watchSize() {
+    if (!("ResizeObserver" in window) || resizeObserver) return;
+    const send = () => {
+      sizeFrame = 0;
+      const width = Math.ceil(window.innerWidth);
+      const height = Math.ceil(document.documentElement.getBoundingClientRect().height);
+      if (width === lastSize.width && height === lastSize.height) return;
+      lastSize = {width, height};
+      notify("ui/notifications/size-changed", {width, height});
+    };
+    resizeObserver = new ResizeObserver(() => {
+      if (sizeFrame) return;
+      sizeFrame = requestAnimationFrame(send);
+    });
+    resizeObserver.observe(document.documentElement);
+    resizeObserver.observe(document.body);
+    send();
+  }
+
+  async function callTool(name, args) {
+    if (!state.hostCapabilities?.serverTools) {
+      throw new Error("宿主未提供 tools/call 代理能力，面板不能读写配置。");
+    }
+    const result = await request("tools/call", {name, arguments: args || {}});
+    if (result?.isError) {
+      const message = Array.isArray(result.content)
+        ? result.content.map(item => item?.text || "").filter(Boolean).join("\n")
+        : "";
+      throw new Error(message || "工具调用失败。");
+    }
+    if (result?.structuredContent && typeof result.structuredContent === "object") {
+      return result.structuredContent;
+    }
+    const content = Array.isArray(result?.content) ? result.content : [];
+    const raw = content.map(item => item?.text || "").filter(Boolean).join("\n");
+    if (!raw) return {};
+    try { return JSON.parse(raw); }
+    catch { return {text: raw}; }
+  }
+
+  window.addEventListener("message", event => {
+    if (event.source !== window.parent) return;
+    const data = event.data;
+    if (!data || data.jsonrpc !== "2.0") return;
+    if (data.id !== undefined && (Object.hasOwn(data, "result") || data.error)) {
+      const pending = state.pending.get(data.id);
+      if (!pending) return;
+      state.pending.delete(data.id);
+      if (data.error) pending.reject(new Error(text(data.error.message) || "宿主返回错误。"));
+      else pending.resolve(data.result);
+      return;
+    }
+    if (data.method === "ping" && data.id !== undefined) {
+      window.parent.postMessage({jsonrpc: "2.0", id: data.id, result: {}}, "*");
+      return;
+    }
+    if (data.method === "ui/resource-teardown" && data.id !== undefined) {
+      if (resizeObserver) resizeObserver.disconnect();
+      window.parent.postMessage({jsonrpc: "2.0", id: data.id, result: {}}, "*");
+      return;
+    }
+    if (data.method === "ui/notifications/host-context-changed") {
+      applyHostContext(data.params);
+      return;
+    }
+    if (data.method === "ui/notifications/tool-result") {
+      const payload = data.params?.structuredContent;
+      if (payload?.settings && payload?.status) renderSnapshot(payload);
+    }
+  });
+
+  function optionLabel(item) {
+    return item.kind === "profile" ? `${item.title} · API` : item.title;
+  }
+
+  function fillSelect(select, options, current, placeholder) {
+    select.replaceChildren();
+    if (placeholder !== undefined) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = placeholder;
+      select.append(option);
+    }
+    for (const item of options) {
+      const option = document.createElement("option");
+      option.value = item.value;
+      option.textContent = optionLabel(item);
+      select.append(option);
+    }
+    if (current && ![...select.options].some(option => option.value === current)) {
+      const option = document.createElement("option");
+      option.value = current;
+      option.textContent = current;
+      select.append(option);
+    }
+    select.value = current || "";
+  }
+
+  function renderStatus(snapshot) {
+    const status = snapshot.status || {};
+    const save = byId("save-status");
+    const install = byId("install-status");
+    const restart = byId("restart-status");
+    const gateway = byId("gateway-status");
+    const verify = byId("verify-status");
+    save.dataset.state = status.save === "saved" ? "saved" : "unknown";
+    install.dataset.state = "unknown";
+    restart.dataset.state = "unknown";
+    gateway.dataset.state = "unknown";
+    verify.dataset.state = "off";
+    byId("save-state").textContent = status.save === "saved" ? "是" : "否";
+    byId("install-state").textContent = "未知";
+    byId("restart-state").textContent = "未知";
+    byId("gateway-state").textContent = "未知";
+    byId("verify-state").textContent = "未验证";
+    byId("executor-status-detail").textContent = "生命周期状态未接入；未启动服务或模型，未验证 API。";
+    save.title = "路由 JSON 的保存状态。";
+    install.title = "生命周期只读状态；未知不会当作已安装。";
+    restart.title = "应用新角色后是否需要完整重启；不会自动重启 Codex。";
+    gateway.title = "本地网关是否运行或健康；健康不代表模型或认证已验证。";
+    verify.title = "API 调用是否经过显式验证；本地健康不会推断为已验证。";
+  }
+
+  function triText(value) {
+    return value === true ? "是" : value === false ? "否" : "未知";
+  }
+
+  function renderExecutorStatus(status) {
+    byId("install-status").querySelector("span:not(.dot)").textContent = "API 角色已安装";
+    const install = byId("install-status");
+    const restart = byId("restart-status");
+    const gateway = byId("gateway-status");
+    const verify = byId("verify-status");
+    byId("install-state").textContent = triText(status.installed);
+    byId("restart-state").textContent = triText(status.restartRequired);
+    let gatewayText = "未知";
+    let gatewayState = "unknown";
+    if (status.gatewayRunning === false) {
+      gatewayText = "未运行";
+      gatewayState = "off";
+    } else if (status.localHealthy === false) {
+      gatewayText = "异常";
+      gatewayState = "pending";
+    } else if (status.gatewayRunning === true && status.localHealthy === true) {
+      gatewayText = "健康";
+      gatewayState = "on";
+    } else if (status.gatewayRunning === true) {
+      gatewayText = "已运行";
+      gatewayState = "pending";
+    } else if (status.localHealthy === true) {
+      gatewayText = "本地健康";
+      gatewayState = "pending";
+    }
+    byId("gateway-state").textContent = gatewayText;
+    install.dataset.state = status.installed === true ? "on" : status.installed === false ? "off" : "unknown";
+    restart.dataset.state = status.restartRequired === true ? "pending" : status.restartRequired === false ? "off" : "unknown";
+    gateway.dataset.state = gatewayState;
+    byId("verify-state").textContent = status.apiVerified === true ? "已验证" : "未验证";
+    verify.dataset.state = status.apiVerified === true ? "on" : "off";
+    const facts = [];
+    if (status.runtimeCompatible !== "unknown") {
+      facts.push(`runtime ${status.runtimeCompatible ? "兼容" : "不兼容"}`);
+    }
+    if (status.credentialAvailable !== "unknown") {
+      facts.push(`凭据 ${status.credentialAvailable ? "可用" : "不可用"}`);
+    }
+    byId("executor-status-detail").textContent = [
+      text(status.detail),
+      facts.join(" · "),
+    ].filter(Boolean).join(" · ") || "生命周期未提供可读状态；未验证 API。";
+  }
+
+  function setStatusLabel(id, label) {
+    byId(id).querySelector("span:not(.dot)").textContent = label;
+  }
+
+  function renderConfiguredExecutorStatus(snapshot) {
+    if (!snapshot) return;
+    const settings = snapshot.settings || {};
+    const install = byId("install-status");
+    const gateway = byId("gateway-status");
+    const verify = byId("verify-status");
+    const guardDisabled = snapshot.capabilities?.guardStatus?.state === "disabled";
+    if (settings.enabled === false || guardDisabled) {
+      setStatusLabel("install-status", "自动分工");
+      setStatusLabel("gateway-status", "本地网关");
+      install.dataset.state = "off";
+      gateway.dataset.state = "unknown";
+      byId("install-state").textContent = "分工已关闭";
+      byId("gateway-state").textContent = "由生命周期确认";
+      byId("restart-state").textContent = "未知";
+      byId("restart-status").dataset.state = "unknown";
+      byId("verify-state").textContent = "未调用";
+      verify.dataset.state = "off";
+      byId("executor-status-detail").textContent = guardDisabled && settings.enabled !== false
+        ? "生命周期守卫已停用自动分工；用户设置仍保持启用。现有 child 与后台空闲执行器状态由生命周期单独报告。"
+        : "配置保留，新的自动子代理派发已关闭；已请求停用本插件拥有的后台计划任务，并在活动任务完成后停止空闲网关。";
+      return;
+    }
+    let selectors = settings.mode === "fixed"
+      ? [settings.fixedExecutor]
+      : settings.mode === "scheduled"
+        ? [settings.schedule?.peak, settings.schedule?.valley]
+        : ["luna", "deepseek"];
+    selectors = selectors.filter(Boolean);
+    const profiles = Object.values(settings.profiles || {});
+    const apiProfiles = selectors.map(selector => profiles.find(profile =>
+      profile.profileId === selector || profile.aliases?.includes(selector))).filter(Boolean);
+    if (settings.mode === "fixed" && apiProfiles.length === 1) {
+      void loadExecutorStatus(apiProfiles[0].profileId);
+      return;
+    }
+    const nativeOnly = apiProfiles.length === 0;
+    if (nativeOnly) {
+      const hasDeepseekGateway = selectors.includes("deepseek");
+      const modelValues = new Set((snapshot.nativeModels || []).map(model => model?.value));
+      const missingNative = selectors.filter(selector => selector?.startsWith("native:") && !modelValues.has(selector.slice(7)));
+      if (selectors.includes("luna") && !(snapshot.nativeModels || []).some(model => /luna/i.test(model?.value || ""))) missingNative.push("luna");
+      const needsCatalog = selectors.some(selector => selector === "luna" || selector?.startsWith("native:"));
+      const currentMainModel = selectors.includes("same") ? snapshot.currentMainModel : null;
+      setStatusLabel("install-status", "当前原生执行器");
+      setStatusLabel("gateway-status", "本地网关");
+      install.dataset.state = (needsCatalog && snapshot.capabilities?.nativeModelsAvailable !== true)
+        || (selectors.includes("same") && !currentMainModel?.model) ? "unknown" : "on";
+      gateway.dataset.state = hasDeepseekGateway ? "unknown" : "off";
+      byId("install-state").textContent = selectors.includes("same")
+        ? (currentMainModel?.model ? `跟随 ${currentMainModel.model}` : "当前聊天模型未知")
+        : needsCatalog
+          ? (snapshot.capabilities?.nativeModelsAvailable === true && missingNative.length === 0 ? "本地目录可用" : "目录未知或模型缺失")
+          : "原生执行器";
+      byId("gateway-state").textContent = hasDeepseekGateway ? "随 DeepSeek 路由" : "不需要";
+      byId("restart-state").textContent = "不需要 API 角色";
+      byId("restart-status").dataset.state = "off";
+      byId("verify-state").textContent = "未调用";
+      verify.dataset.state = "off";
+      byId("executor-status-detail").textContent = needsCatalog
+        ? `${missingNative.length ? `选定原生模型不在当前目录：${missingNative.join(", ")}。派发会明确失败，不会替换模型。` : "状态来自本地 Codex 模型目录；不会调用 API。"}${currentMainModel?.model ? ` same 跟随当前聊天模型 ${currentMainModel.model}。` : selectors.includes("same") ? " same 当前聊天模型未知，派发会明确失败。" : ""}`
+        : selectors.includes("same")
+          ? (currentMainModel?.model ? `same 将为当前聊天模型 ${currentMainModel.model} 创建独立 child；API 角色安装状态不适用。` : "无法读取当前聊天模型；same 派发会明确失败，不使用全局默认模型。")
+          : "当前路由使用原生执行器；API 角色安装状态不适用。";
+      return;
+    }
+    setStatusLabel("install-status", "API 角色状态");
+    setStatusLabel("gateway-status", "API 本地网关");
+    install.dataset.state = "unknown";
+    gateway.dataset.state = "unknown";
+    byId("install-state").textContent = "按 profile 检查";
+    byId("gateway-state").textContent = "按 profile 检查";
+    byId("restart-state").textContent = "按 profile 检查";
+    byId("restart-status").dataset.state = "unknown";
+    byId("verify-state").textContent = "未验证";
+    verify.dataset.state = "off";
+    byId("executor-status-detail").textContent = "计划中包含 API profile；逐个展开 API 配置查看其角色和网关状态。自动峰谷或原生模型选择不由 API profile 数量判定。";
+  }
+
+  async function loadExecutorStatus(profileId) {
+    if (!profileId) {
+      renderConfiguredExecutorStatus(state.snapshot);
+      return;
+    }
+    if (!state.hostCapabilities?.serverTools) return;
+    const requestId = ++statusRequest;
+    try {
+      const status = await callTool(
+        "router_settings_executor_status",
+        profileId ? {profileId} : {},
+      );
+      if (requestId !== statusRequest) return;
+      renderExecutorStatus(status);
+    } catch (error) {
+      if (requestId !== statusRequest) return;
+      byId("executor-status-detail").textContent = `执行器状态读取失败：${messageOf(error)}`;
+    }
+  }
+
+  function renderSnapshot(snapshot) {
+    state.snapshot = snapshot;
+    const settings = snapshot.settings || {};
+    byId("router-enabled").checked = settings.enabled !== false;
+    const options = Array.isArray(snapshot.selectors) ? snapshot.selectors : [];
+    for (const input of modeInputs) input.checked = input.value === settings.mode;
+    fillSelect(byId("fixed-executor"), options, settings.fixedExecutor || "", "选择执行器");
+    fillSelect(byId("peak-executor"), options, settings.schedule?.peak || "luna");
+    fillSelect(byId("valley-executor"), options, settings.schedule?.valley || "deepseek");
+    renderMode();
+    renderProfiles(settings.profiles || {});
+    const contextNote = byId("context-window-note");
+    if (snapshot.capabilities?.contextWindow === false) {
+      contextNote.textContent = "当前设置核心尚未支持上下文预算字段；带此值的保存会被拒绝。可留空先保存配置，等待集成后再添加预算。";
+      contextNote.hidden = false;
+    } else {
+      contextNote.textContent = "";
+      contextNote.hidden = true;
+    }
+    renderStatus(snapshot);
+    renderConfiguredExecutorStatus(snapshot);
+    state.dirty = false;
+    byId("dirty").textContent = "";
+    byId("reload-route").hidden = true;
+    renderApplyAvailability();
+  }
+
+  function renderMode() {
+    const mode = modeInputs.find(input => input.checked)?.value || "auto";
+    byId("fixed-block").hidden = mode !== "fixed";
+    byId("schedule-block").hidden = mode !== "scheduled";
+  }
+
+  function profileRows(profiles) {
+    return Object.values(profiles).sort((left, right) => {
+      const leftLabel = text(left.label) || text(left.model);
+      const rightLabel = text(right.label) || text(right.model);
+      return leftLabel.localeCompare(rightLabel, "zh-CN");
+    });
+  }
+
+  function credentialLabel(credential) {
+    if (credential?.type === "dsh_account") return "自动账号";
+    if (credential?.type === "env") return `环境变量 · ${text(credential.name)}`;
+    if (credential?.type === "file") return "密钥文件";
+    return "未知凭据";
+  }
+
+  function renderProfiles(profiles) {
+    const list = byId("profile-list");
+    list.replaceChildren();
+    const rows = profileRows(profiles);
+    byId("profile-empty").hidden = rows.length > 0;
+    for (const profile of rows) {
+      const row = document.createElement("article");
+      row.className = "profile-row";
+      const info = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = text(profile.label) || text(profile.model) || profile.profileId;
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const budget = Number.isInteger(profile.contextWindow) ? ` · 预算 ${profile.contextWindow}` : "";
+      meta.textContent = `${profile.model} · ${profile.protocol === "chat_completions" ? "Chat Completions" : "Responses"} · ${credentialLabel(profile.credential)}${budget}`;
+      const chips = document.createElement("div");
+      for (const alias of profile.aliases || []) {
+        const chip = document.createElement("span");
+        chip.className = "profile-chip";
+        chip.textContent = `别名 ${alias}`;
+        chips.append(chip);
+      }
+      const id = document.createElement("div");
+      id.className = "mono";
+      id.textContent = `${profile.profileId} · ${profile.baseUrl}`;
+      info.append(title, meta, chips, id);
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "ghost small";
+      edit.textContent = "编辑为新版本";
+      edit.addEventListener("click", () => openEditor(profile));
+      row.append(info, edit);
+      list.append(row);
+    }
+  }
+
+  function defaultReasoning() {
+    return {supported: ["none"], default: "none", parameter: "none"};
+  }
+
+  function renderReasoning(reasoning) {
+    const container = byId("reasoning-supported");
+    container.replaceChildren();
+    const supported = Array.isArray(reasoning?.supported) && reasoning.supported.length
+      ? reasoning.supported
+      : ["none"];
+    for (const effort of EFFORTS) {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = effort;
+      input.checked = supported.includes(effort);
+      const span = document.createElement("span");
+      span.textContent = effort;
+      label.append(input, span);
+      container.append(label);
+    }
+    const defaultSelect = byId("reasoning-default");
+    defaultSelect.replaceChildren();
+    for (const effort of EFFORTS) {
+      const option = document.createElement("option");
+      option.value = effort;
+      option.textContent = effort;
+      defaultSelect.append(option);
+    }
+    defaultSelect.value = supported.includes(reasoning?.default) ? reasoning.default : supported[0];
+    byId("reasoning-parameter").value = reasoning?.parameter || "none";
+  }
+
+  function openEditor(profile) {
+    if (!state.snapshot) {
+      setNotice("配置尚未载入，请先重新载入。", "error");
+      return;
+    }
+    state.editing = profile || null;
+    const editing = Boolean(profile);
+    byId("editor-title").textContent = editing ? "编辑 API 配置" : "新增 API 配置";
+    byId("editor-subtitle").textContent = editing
+      ? `基于 ${profile.profileId} 创建新版本；旧版本会保留。`
+      : "只保存引用，不保存真实密钥。";
+    byId("profile-label").value = text(profile?.label) || "";
+    byId("api-provider-preset").value = "";
+    byId("api-discovered-models").replaceChildren(new Option("选择已发现模型", ""));
+    byId("api-discovered-models").hidden = true;
+    byId("profile-protocol").value = profile?.protocol || "responses";
+    byId("profile-base-url").value = text(profile?.baseUrl) || "";
+    byId("profile-model").value = text(profile?.model) || "";
+    byId("profile-aliases").value = (profile?.aliases || []).join(", ");
+    byId("profile-context-window").value = profile
+      ? (Number.isInteger(profile.contextWindow) ? String(profile.contextWindow) : "")
+      : "128000";
+    renderReasoning(profile?.reasoning || defaultReasoning());
+    const credential = profile?.credential || {type: "dsh_account"};
+    byId("credential-type").value = credential.type;
+    byId("credential-name").value = text(credential.name) || "";
+    byId("credential-path").value = text(credential.path) || "";
+    byId("credential-result").textContent = "";
+    byId("credential-result").className = "check-result";
+    byId("profile-pending").hidden = true;
+    byId("reload-profile").hidden = true;
+    byId("profile-form").hidden = false;
+    updateCredentialFields();
+    byId("profile-label").focus();
+    void loadExecutorStatus(profile?.profileId);
+  }
+
+  function closeEditor() {
+    state.editing = null;
+    byId("profile-form").hidden = true;
+    byId("profile-pending").hidden = true;
+    byId("reload-profile").hidden = true;
+    renderConfiguredExecutorStatus(state.snapshot);
+  }
+
+  function updateCredentialFields() {
+    const type = byId("credential-type").value;
+    byId("credential-name-field").hidden = type !== "env";
+    byId("credential-path-field").hidden = type !== "file";
+    if (type === "dsh_account" && !byId("profile-base-url").value.trim()) {
+      byId("profile-base-url").value = "https://api.deepseek.com";
+      byId("profile-protocol").value = "responses";
+    }
+  }
+
+  function applyProviderPreset(name) {
+    const preset = state.snapshot?.providerPresets?.[name];
+    if (!preset) return;
+    byId("profile-protocol").value = preset.protocol;
+    byId("profile-base-url").value = preset.baseUrl;
+    byId("profile-model").value = preset.model || "";
+    byId("credential-type").value = preset.credential.type;
+    byId("credential-name").value = preset.credential.name || "";
+    byId("credential-path").value = "";
+    renderReasoning(preset.reasoning);
+    updateCredentialFields();
+    byId("credential-result").textContent = "";
+    markDirty();
+  }
+
+  async function loadApiModels() {
+    const button = byId("get-api-models");
+    const select = byId("api-discovered-models");
+    const currentModel = byId("profile-model").value;
+    button.disabled = true;
+    select.hidden = true;
+    try {
+      const result = await callTool("router_settings_list_api_models", {
+        baseUrl: byId("profile-base-url").value.trim(),
+        protocol: byId("profile-protocol").value,
+        credential: collectCredential(),
+      });
+      const models = Array.isArray(result.models) ? result.models : [];
+      select.replaceChildren(new Option("选择已发现模型", ""));
+      for (const model of models) select.append(new Option(model, model));
+      select.hidden = models.length === 0;
+      byId("profile-model").value = currentModel;
+      setNotice(models.length ? `已获取 ${models.length} 个模型；当前手填模型保持不变。` : "接口没有返回模型；可继续手动填写。", models.length ? "success" : "error");
+    } catch (error) {
+      byId("profile-model").value = currentModel;
+      setNotice(`获取模型列表失败；手填模型已保留：${messageOf(error)}`, "error");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function collectCredential() {
+    const type = byId("credential-type").value;
+    if (type === "env") {
+      return {type: "env", name: byId("credential-name").value.trim()};
+    }
+    if (type === "file") {
+      return {type: "file", path: byId("credential-path").value.trim()};
+    }
+    return {type: "dsh_account"};
+  }
+
+  function collectDefinition() {
+    const supported = [...byId("reasoning-supported").querySelectorAll("input:checked")].map(input => input.value);
+    const definition = {
+      protocol: byId("profile-protocol").value,
+      baseUrl: byId("profile-base-url").value.trim(),
+      model: byId("profile-model").value.trim(),
+      reasoning: {
+        supported,
+        default: byId("reasoning-default").value,
+        parameter: byId("reasoning-parameter").value,
+      },
+      credential: collectCredential(),
+    };
+    const contextWindowRaw = byId("profile-context-window").value.trim();
+    if (contextWindowRaw) {
+      const contextWindow = Number(contextWindowRaw);
+      if (!Number.isInteger(contextWindow) || contextWindow < 1024 || contextWindow > 2000000) {
+        throw new Error("上下文预算必须是 1024–2000000 的整数 tokens。");
+      }
+      definition.contextWindow = contextWindow;
+    }
+    if (!definition.baseUrl) throw new Error("请填写 Base URL。");
+    if (!definition.model) throw new Error("请填写精确模型名。");
+    if (!supported.length) throw new Error("至少选择一个推理强度。");
+    if (!supported.includes(definition.reasoning.default)) throw new Error("默认强度必须在已选强度中。");
+    if (definition.credential.type === "env" && !definition.credential.name) throw new Error("请填写环境变量名。");
+    if (definition.credential.type === "file" && !definition.credential.path) throw new Error("请填写密钥文件绝对路径。");
+    return definition;
+  }
+
+  function collectSettings() {
+    if (!state.snapshot) throw new Error("配置尚未载入。");
+    const mode = modeInputs.find(input => input.checked)?.value || "auto";
+    const next = {
+      ...state.snapshot.settings,
+      profiles: {...(state.snapshot.settings.profiles || {})},
+      enabled: byId("router-enabled").checked,
+      mode,
+    };
+    if (mode === "fixed") {
+      const fixed = byId("fixed-executor").value;
+      if (!fixed) throw new Error("固定模式需要选择一个执行器。");
+      next.fixedExecutor = fixed;
+    } else {
+      next.fixedExecutor = null;
+    }
+    if (mode === "scheduled") {
+      next.schedule = {
+        peak: byId("peak-executor").value,
+        valley: byId("valley-executor").value,
+      };
+    }
+    return next;
+  }
+
+  async function loadSnapshot() {
+    setBusy(true);
+    setNotice("正在读取配置…");
+    try {
+      const snapshot = await callTool("router_settings_snapshot", {});
+      renderSnapshot(snapshot);
+      setNotice(snapshot.status?.notice || "");
+    } catch (error) {
+      state.snapshot = null;
+      byId("save-status").dataset.state = "unknown";
+      byId("install-status").dataset.state = "unknown";
+      byId("restart-status").dataset.state = "unknown";
+      byId("gateway-status").dataset.state = "unknown";
+      byId("verify-status").dataset.state = "off";
+      byId("save-state").textContent = "读取失败";
+      byId("install-state").textContent = "未知";
+      byId("restart-state").textContent = "未知";
+      byId("gateway-state").textContent = "未知";
+      byId("verify-state").textContent = "未验证";
+      byId("executor-status-detail").textContent = "配置读取失败；生命周期状态未读取。";
+      renderApplyAvailability();
+      setNotice(`读取失败：${messageOf(error)}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function markDirty() {
+    state.dirty = true;
+    byId("dirty").textContent = "有未保存更改";
+    renderApplyAvailability();
+  }
+
+  async function saveRoute(event) {
+    event.preventDefault();
+    if (state.busy) return;
+    if (!state.snapshot) {
+      setNotice("配置尚未载入，请先重新载入。", "error");
+      return;
+    }
+    setBusy(true);
+    setNotice("正在保存路由…");
+    byId("reload-route").hidden = true;
+    try {
+      const settings = collectSettings();
+      const saved = await callTool("router_settings_save", {
+        settings,
+        expectedSha256: state.snapshot.sha256,
+      });
+      renderSnapshot(saved);
+      setNotice(saved.status?.notice || "路由设置已保存。");
+    } catch (error) {
+      const message = messageOf(error);
+      setNotice(`保存失败：${message}`, "error");
+      if (/changed since|reload|重新载入|conflict/i.test(message)) {
+        byId("reload-route").hidden = false;
+        setNotice("配置已被其他窗口修改。请重新载入，确认后再保存。", "error");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveProfile(event) {
+    event.preventDefault();
+    if (state.busy) return;
+    if (!state.snapshot) {
+      setNotice("配置尚未载入，请先重新载入。", "error");
+      return;
+    }
+    setBusy(true);
+    byId("profile-pending").hidden = true;
+    byId("reload-profile").hidden = true;
+    byId("credential-result").textContent = "";
+    try {
+      const definition = collectDefinition();
+      const aliases = byId("profile-aliases").value
+        .split(/[,，]/).map(alias => alias.trim()).filter(Boolean);
+      const label = byId("profile-label").value.trim();
+      const uniqueAliases = [...new Set(aliases)];
+      const args = {
+        expectedSha256: state.snapshot.sha256,
+        basedOnProfileId: state.editing?.profileId || null,
+        definition,
+        ...(label ? {label} : {}),
+        ...(uniqueAliases.length ? {aliases: uniqueAliases} : {}),
+      };
+      const result = await callTool("router_settings_save_profile", args);
+      renderSnapshot(result);
+      closeEditor();
+      const pendingMessage = result.pending?.message || "";
+      setNotice(pendingMessage || "API 配置已保存。");
+      byId("profiles-pending").textContent = pendingMessage;
+      byId("profiles-pending").hidden = !pendingMessage;
+    } catch (error) {
+      const message = messageOf(error);
+      setNotice(`配置未保存：${message}`, "error");
+      byId("profile-pending").textContent = message;
+      byId("profile-pending").hidden = false;
+      if (/changed since|reload|重新载入|conflict/i.test(message)) {
+        byId("reload-profile").hidden = false;
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function checkCredential() {
+    if (state.busy) return;
+    setBusy(true);
+    const output = byId("credential-result");
+    output.textContent = "检查中…";
+    output.className = "check-result";
+    try {
+      const definition = collectDefinition();
+      const result = await callTool("router_settings_check_credential", {
+        baseUrl: definition.baseUrl,
+        protocol: definition.protocol,
+        credential: definition.credential,
+      });
+      output.textContent = result.available
+        ? "本地凭据可用。未发起 API 请求，也未验证认证。"
+        : `本地凭据不可用。${result.reason || ""}`;
+      output.className = `check-result ${result.available ? "ok" : "bad"}`;
+    } catch (error) {
+      output.textContent = `检查失败：${messageOf(error)}`;
+      output.className = "check-result bad";
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyConfiguration() {
+    if (state.busy) return;
+    if (!state.snapshot) {
+      setNotice("配置尚未载入，请先重新载入。", "error");
+      return;
+    }
+    if (state.dirty) {
+      setNotice("有未保存的路由更改；先保存后再应用。", "error");
+      return;
+    }
+    if (state.snapshot.capabilities?.applyApiConfiguration !== true) {
+      setNotice("当前 runtime 未提供 API 配置应用接口；不会自动下载或安装 runtime，也不会关闭或重启 Codex。", "error");
+      return;
+    }
+    const output = byId("apply-result");
+    output.textContent = "正在应用…";
+    output.className = "check-result";
+    setBusy(true);
+    try {
+      const result = await callTool("router_settings_apply", {
+        expectedSha256: state.snapshot.sha256,
+      });
+      if (result.applied === true) {
+        output.textContent = result.restartRequired === true
+          ? "已应用。新增或更新的角色需要完整重启 Codex 后生效。"
+          : "已应用。";
+        output.className = "check-result ok";
+        setNotice(result.detail || "API 配置已应用。");
+        await loadExecutorStatus();
+        if (result.restartRequired === true) {
+          byId("restart-state").textContent = "是";
+          byId("restart-status").dataset.state = "pending";
+        }
+      } else {
+        const reason = text(result.detail) || text(result.reason) || "未应用。";
+        output.textContent = `未应用：${reason}`;
+        output.className = "check-result bad";
+        setNotice(`应用失败：${reason}`, "error");
+      }
+    } catch (error) {
+      const message = messageOf(error);
+      output.textContent = `应用失败：${message}`;
+      output.className = "check-result bad";
+      setNotice(`应用失败：${message}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function connect() {
+    setBusy(true);
+    try {
+      const initialized = await request("ui/initialize", {
+        appInfo: {name: "router-settings", version: "1.0.0"},
+        appCapabilities: {
+          tools: {listChanged: false},
+          availableDisplayModes: ["inline", "fullscreen"],
+        },
+        protocolVersion: "2026-01-26",
+      });
+      state.hostCapabilities = initialized?.hostCapabilities || {};
+      applyHostContext(initialized?.hostContext);
+      notify("ui/notifications/initialized", {});
+      watchSize();
+      if (!state.hostCapabilities.serverTools) {
+        setHostWarning("宿主未提供 tools/call 代理能力（hostCapabilities.serverTools），面板不能读写配置。请更新宿主，或从插件设置页使用结构化设置。");
+        setBusy(false);
+        return;
+      }
+      setHostWarning("");
+      await loadSnapshot();
+    } catch (error) {
+      setHostWarning(`宿主未完成 MCP App 初始化：${messageOf(error)}`);
+      setBusy(false);
+    }
+  }
+
+  modeInputs.forEach(input => input.addEventListener("change", () => {
+    renderMode();
+    markDirty();
+  }));
+  byId("fixed-executor").addEventListener("change", markDirty);
+  byId("peak-executor").addEventListener("change", markDirty);
+  byId("valley-executor").addEventListener("change", markDirty);
+  byId("router-enabled").addEventListener("change", markDirty);
+  byId("router-form").addEventListener("submit", saveRoute);
+  byId("refresh").addEventListener("click", loadSnapshot);
+  byId("connection-diagnostics").addEventListener("click", async () => {
+    const output = byId("connection-diagnostics-result");
+    output.textContent = "正在读取本地诊断…";
+    try {
+      const result = await callTool("router_connection_diagnostics", {});
+      if (!result.available) { output.textContent = "本地诊断暂不可用；根因仍不确定。"; return; }
+      const events = Array.isArray(result.events) ? result.events : [];
+      output.textContent = events.length
+        ? events.map(event => `${event.timestampUtc} · ${event.errorClass}${event.httpStatus ? ` · HTTP ${event.httpStatus}` : ""}${event.requestBytes ? ` · ${event.requestBytes} bytes` : ""}`).join("\n")
+        : "未找到可分类的近期连接错误；根因仍不确定。";
+    } catch (error) {
+      output.textContent = `诊断失败：${messageOf(error)}`;
+    }
+  });
+  byId("reload-route").addEventListener("click", loadSnapshot);
+  byId("new-profile").addEventListener("click", () => openEditor(null));
+  byId("cancel-profile").addEventListener("click", closeEditor);
+  byId("profile-form").addEventListener("submit", saveProfile);
+  byId("check-credential").addEventListener("click", checkCredential);
+  byId("apply-api").addEventListener("click", applyConfiguration);
+  byId("credential-type").addEventListener("change", updateCredentialFields);
+  byId("api-provider-preset").addEventListener("change", event => applyProviderPreset(event.target.value));
+  byId("get-api-models").addEventListener("click", loadApiModels);
+  byId("api-discovered-models").addEventListener("change", event => {
+    if (event.target.value) byId("profile-model").value = event.target.value;
+  });
+  byId("reload-profile").addEventListener("click", loadSnapshot);
+  byId("profile-form").addEventListener("input", () => {
+    byId("credential-result").textContent = "";
+    byId("credential-result").className = "check-result";
+  });
+  connect();
+})();
+</script>
+</body>
+</html>

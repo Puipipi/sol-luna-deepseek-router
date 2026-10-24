@@ -1,0 +1,88 @@
+{
+  "version": "0.10.5",
+  "status": {
+    "plugin_installed": true,
+    "backend_activated": true,
+    "runtime_observed": false,
+    "desktop_accepted": false,
+    "restart_needed": true
+  },
+  "package": {
+    "source_commit": "d340fc606fdf1d8aa52fd4900614087b7970948e",
+    "zip_sha256": "efe4ac6794b0a5af480b95cbe9e17a7ea83aefff9bfc9b8a367e7422e3940587",
+    "file_count": 134,
+    "standalone_file_count": 78,
+    "receipt_sha256": "72cd304bc4e0bdcda3403bfc9c789dcf7ba7e35e92f101b57be5b684d3486051"
+  },
+  "runtime": {
+    "workflow_run": "https://github.com/Puipipi/sol-luna-deepseek-router/actions/runs/39115060111",
+    "artifact_id": "12134407029",
+    "artifact_name": "native-isolated-codex-windows-msvc-39115060111",
+    "archive_size_bytes": 117765493,
+    "archive_digest": "sha256:b6cff1d8b17e0665932c1702632250dae5b3643b3ec46484c14d48d36db89f5c",
+    "provenance_sha256": "3df602259fbfe9bf07376cafffa6356d2e57b3d08087aecbde0060c63af43178",
+    "binary_size_bytes": 341281792,
+    "binary_sha256": "6ec8cb89c6f80e52b35ef285d6337a4f5a99b3f294f3b983c95e6af6bcb4666f",
+    "upstream_source_commit": "4ebc485ca321243727539187169425fcf972f2c4",
+    "patch_sha256": "7a5c127a24c2c2b80d3933ad9590c4766fb7a1a99b4a917bc607eedde1f734d8",
+    "target": "x86_64-pc-windows-msvc",
+    "target_test_count": 1,
+    "target_tests_passed": 1,
+    "release_build_succeeded": true,
+    "runtime_id": "4ebc485ca321-7a5c127a24c2-6ec8cb89c6f8",
+    "runtime_manifest_sha256": "76f4999bec2fab746147bf2b4b6a3d8792426d39291d92c9a649e144fa4c5309",
+    "stage_receipt_sha256": "31477ded533b9178a29d0cb23c2a0847c61595eb1481becfd901bbb6468929ba"
+  },
+  "installation": {
+    "plugin_enabled_count": 1,
+    "cache_file_count_matched": 134,
+    "standalone_file_count_matched": 78,
+    "preexisting_extras_preserved": 4,
+    "marketplace_remove_add_exit_code": 0,
+    "plugin_add_exit_code": 0,
+    "receipt_sha256": "9701625ab1a331d7c4933d435a455cdd3787aebba568d44d7b3535c40eba860f"
+  },
+  "activation": {
+    "prepare_exit_code": 0,
+    "prepare_smoke_passed": 9,
+    "prepare_smoke_total": 9,
+    "activate_exit_code": 0,
+    "status_exit_code": 0,
+    "readonly_inspect_exit_code": 0,
+    "journal_active": true,
+    "journal_completed_checks": 6,
+    "journal_all_checks_completed": true,
+    "journal_sha256": "4fa615dc7ac6389a3a270820a2ee8585b2194b674486221935b216dd5161f546",
+    "role_sha256": "c02769ce38ad4be03f6fb66a0d0098b546269137d297ea68bdd4e2a70a073efc",
+    "role_unbounded_connection_retries": false,
+    "prepare_receipt_sha256": "1db401edec733a011f6ee759f106d3f38913f70184073da0282d6a43f9cf11c8",
+    "activate_receipt_sha256": "e70719d5601875d765d4fbccd3262759cddb9c760f61b915e88c6b861151fdd1"
+  },
+  "runtime_observation": {
+    "running_process_runtime": "B311",
+    "native_agent_gate_exit_code": 2,
+    "native_agent_gate_reason": "runtime-patch-mismatch",
+    "gateway_setup_reached": false,
+    "child_dispatch_count": 0,
+    "task_state": "Running",
+    "strict_health": true,
+    "deepseek_only": true,
+    "relay_allowed": false,
+    "task_definition_comparison_proves_unchanged": false
+  },
+  "acceptance": {
+    "native_child_discovery_confirmed": true,
+    "same_child_panel_confirmed": true,
+    "same_child_followup_confirmed": true,
+    "third_turn_live_progress_tools_result_confirmed": true,
+    "first_two_turn_tool_expansion_confirmed": false,
+    "cold_app_restart_confirmed": false,
+    "new_runtime_failure_recovery_confirmed": false,
+    "deepseek_child_concurrency_confirmed": false
+  },
+  "license": {
+    "upstream_cli": "Apache-2.0",
+    "router_repository": "MIT",
+    "official_compatibility_guarantee": false
+  }
+}

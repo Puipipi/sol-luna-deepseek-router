@@ -367,6 +367,20 @@ console.log(`PASS ${checks} native gateway assertions`);
     equal(strictCalls.length, 1, "GPT and unknown models cause no upstream calls");
     equal(strictGateway.stats.openai_requests, 0, "strict rejection never increments the OpenAI upstream request count");
 
+    const legacyAgentMessage = "Message Type: NEW_TASK\nPayload:\nfixture task";
+    const legacyChild = await requestModel("deepseek/deepseek-flash", [{
+      type: "agent_message",
+      content: [{ type: "input_text", text: legacyAgentMessage }],
+    }]);
+    equal(legacyChild.status, 200, "legacy gateway accepts plain agent_message input");
+    equal(strictCalls.length, 2, "legacy child uses exactly one DeepSeek upstream call");
+    const legacyBody = JSON.parse(strictCalls[1].options.body);
+    equal(legacyBody.input.length, 1, "legacy agent_message becomes one standard Responses item");
+    equal(legacyBody.input[0].type, "message", "legacy agent_message is normalized to a message");
+    equal(legacyBody.input[0].role, "user", "legacy agent_message is routed as user content");
+    equal(legacyBody.input[0].content[0].text, legacyAgentMessage, "legacy child task text is preserved");
+    equal(strictGateway.stats.relay_calls, 0, "legacy child does not use the signed-in OpenAI relay");
+
     const encrypted = await requestModel("deepseek/deepseek-flash", [{
       type: "agent_message",
       content: [
@@ -376,7 +390,7 @@ console.log(`PASS ${checks} native gateway assertions`);
     }]);
     equal(encrypted.status, 403, "encrypted collaboration input is refused even when ChatGPT auth is present");
     await encrypted.arrayBuffer();
-    equal(strictCalls.length, 1, "strict encrypted input performs no relay or DeepSeek upstream call");
+    equal(strictCalls.length, 2, "strict encrypted input performs no relay or DeepSeek upstream call");
     equal(strictGateway.stats.relay_calls, 0, "strict relay cap remains zero");
   } finally {
     await strictGateway.close();

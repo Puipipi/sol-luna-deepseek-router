@@ -113,6 +113,118 @@ async function activeMigrationFixture(label) {
 }
 
 try {
+  const roleUpgrade = await fixture("bounded-retry-role-upgrade");
+  const upgradeConfigPath = path.join(roleUpgrade.codexHome, "config.toml");
+  const upgradeConfigBytes = Buffer.from([
+    'model = "gpt-current"',
+    '# user-owned root configuration comment',
+    "",
+    "[features]",
+    "multi_agent = true",
+    "unbounded_connection_retries = true",
+    "",
+  ].join("\n"));
+  const historicalRoleBytes = Buffer.from([
+    'name = "native_deepseek"',
+    'description = "DeepSeek Flash native collaboration child"',
+    'model = "deepseek/deepseek-flash"',
+    'model_reasoning_effort = "high"',
+    'developer_instructions = """',
+    "你是原生 DeepSeek 子代理。使用简体中文汇报进度与结果；遵守主任务明确的文件范围、权限和验证要求。只执行被分配的工作，不扩大范围；遇到缺少权限或信息时如实说明。",
+    '"""',
+    "",
+  ].join("\n"));
+  const upgradeRolePath = path.join(roleUpgrade.codexHome, "agents", "native_deepseek.toml");
+  const roleLegacyManifestPath = path.join(roleUpgrade.dir, "legacy-role-manifest.json");
+  await writeFile(upgradeConfigPath, upgradeConfigBytes);
+  await writeFile(upgradeRolePath, historicalRoleBytes);
+  await writeFile(roleLegacyManifestPath, JSON.stringify({ agent: upgradeRolePath }));
+  let smokeRoleBytes;
+  let smokeRootConfigBytes;
+  await prepare({ ...roleUpgrade.common, legacyManifestPath: roleLegacyManifestPath }, {
+    smokeCheck: async ({ preparedHome }) => {
+      smokeRoleBytes = await readFile(path.join(preparedHome, "agents", "native_deepseek.toml"));
+      smokeRootConfigBytes = await readFile(path.join(preparedHome, "config.toml"));
+      return { status: "passed", checks: { role_config: true } };
+    },
+  });
+  const smokeRole = smokeRoleBytes.toString("utf8");
+  ok(smokeRole.includes("[features]\nunbounded_connection_retries = false"), "prepare smoke uses a role that disables unbounded connection retries");
+  ok(smokeRootConfigBytes.toString("utf8").includes("unbounded_connection_retries = true"), "prepare smoke preserves the root retry feature");
+  await roleUpgrade.activateFixture();
+  const roleUpgradeActivatedConfig = await readFile(upgradeConfigPath, "utf8");
+  const roleUpgradeActivatedRole = await readFile(upgradeRolePath, "utf8");
+  ok(roleUpgradeActivatedRole.includes("[features]\nunbounded_connection_retries = false"), "activate writes the bounded retry feature to the dedicated role");
+  ok(roleUpgradeActivatedConfig.includes("# user-owned root configuration comment"), "activate preserves user root config comments");
+  ok(roleUpgradeActivatedConfig.includes("unbounded_connection_retries = true"), "activate preserves the root retry feature");
+  await roleUpgrade.rollbackFixture();
+  equal((await readFile(upgradeConfigPath)).equals(upgradeConfigBytes), true, "rollback restores the exact user config bytes");
+  equal((await readFile(upgradeRolePath)).equals(historicalRoleBytes), true, "rollback restores the independent historical role bytes");
+
+  const activeRoleUpgrade = await fixture("active-bounded-retry-role-upgrade");
+  const activeConfigPath = path.join(activeRoleUpgrade.codexHome, "config.toml");
+  const activeConfigPrior = Buffer.from('model = "gpt-current"\n[features]\nunbounded_connection_retries = true\n');
+  const activeRolePath = path.join(activeRoleUpgrade.codexHome, "agents", "native_deepseek.toml");
+  const activeLegacyManifestPath = path.join(activeRoleUpgrade.dir, "legacy-active-manifest.json");
+  await writeFile(activeConfigPath, activeConfigPrior);
+  await writeFile(activeRolePath, historicalRoleBytes);
+  await writeFile(activeLegacyManifestPath, JSON.stringify({ agent: activeRolePath }));
+  await prepare({ ...activeRoleUpgrade.common, legacyManifestPath: activeLegacyManifestPath });
+  await activeRoleUpgrade.activateFixture();
+  await writeFile(activeRolePath, historicalRoleBytes);
+  const activeJournal = decodeJournal(await readFile(activeRoleUpgrade.journalPath, "utf8"));
+  activeJournal.files.files["agents/native_deepseek.toml"].next = historicalRoleBytes.toString("utf8");
+  await writeFile(activeRoleUpgrade.journalPath, encodeJournal(activeJournal));
+
+  const upgradedRuntimeDir = path.join(activeRoleUpgrade.dir, "runtime", "versions", "approved-upgrade");
+  await cp(activeRoleUpgrade.versionDir, upgradedRuntimeDir, { recursive: true });
+  const upgradedJournalPath = path.join(activeRoleUpgrade.dir, "journal", "upgrade.json");
+  const activeGatewayPaths = gatewayPaths(activeRoleUpgrade.gatewayDir);
+  const activeStatePrior = await readFile(activeGatewayPaths.state);
+  const activeIdentityPrior = await readFile(activeGatewayPaths.identity);
+  const activeEnvironmentPrior = structuredClone([...activeRoleUpgrade.environment]);
+  const activeConfigBeforePrepare = await readFile(activeConfigPath);
+  const activeRoleBeforePrepare = await readFile(activeRolePath);
+  const upgradedLegacyManifestPath = path.join(activeRoleUpgrade.dir, "legacy-upgrade-manifest.json");
+  await writeFile(upgradedLegacyManifestPath, JSON.stringify({ agent: activeRolePath }));
+  await prepare({
+    ...activeRoleUpgrade.common,
+    versionDir: upgradedRuntimeDir,
+    journalPath: upgradedJournalPath,
+    legacyManifestPath: upgradedLegacyManifestPath,
+  }, {
+    prepareGatewayIdentity: async ({ paths }) => readGatewayIdentity(paths),
+    smokeCheck: async ({ preparedHome }) => {
+      const preparedRole = await readFile(path.join(preparedHome, "agents", "native_deepseek.toml"), "utf8");
+      const preparedConfig = await readFile(path.join(preparedHome, "config.toml"), "utf8");
+      return {
+        status: preparedRole.includes("unbounded_connection_retries = false")
+          && preparedConfig.includes("unbounded_connection_retries = true") ? "passed" : "failed",
+        checks: { role_config: true, root_config: true },
+      };
+    },
+  });
+  equal((await readFile(activeGatewayPaths.state)).equals(activeStatePrior), true, "upgrade prepare leaves the existing gateway PID state untouched");
+  equal((await readFile(activeGatewayPaths.identity)).equals(activeIdentityPrior), true, "upgrade prepare reuses the existing gateway identity");
+  equal(JSON.stringify([...activeRoleUpgrade.environment]), JSON.stringify(activeEnvironmentPrior), "upgrade prepare leaves managed environment values untouched");
+  equal((await readFile(activeConfigPath)).equals(activeConfigBeforePrepare), true, "upgrade prepare leaves the active root config untouched");
+  equal((await readFile(activeRolePath)).equals(activeRoleBeforePrepare), true, "upgrade prepare leaves the active historical role untouched");
+  const activeTaskBeforePrepare = await activeRoleUpgrade.taskAdapter.status({ name: "fixture" });
+  equal(activeTaskBeforePrepare.state, "Running", "upgrade prepare preserves the existing owned Task state");
+  await activeRoleUpgrade.activateFixture({ journalPath: upgradedJournalPath }, {
+    ensureGateway: async ({ paths }) => ({ state: JSON.parse(await readFile(paths.state, "utf8")), started: false }),
+  });
+  const upgradedRole = await readFile(activeRolePath, "utf8");
+  ok(upgradedRole.includes("[features]\nunbounded_connection_retries = false"), "active upgrade installs the bounded retry role");
+  ok((await readFile(activeGatewayPaths.state)).equals(activeStatePrior), "active upgrade retains the preexisting gateway PID");
+  await activeRoleUpgrade.rollbackFixture({ journalPath: upgradedJournalPath });
+  equal((await readFile(activeRolePath)).equals(historicalRoleBytes), true, "active upgrade rollback restores the historical role bytes");
+  equal((await readFile(activeConfigPath)).equals(activeConfigBeforePrepare), true, "active upgrade rollback restores the previous root config");
+  equal((await readFile(activeGatewayPaths.state)).equals(activeStatePrior), true, "active upgrade rollback retains the preexisting gateway PID");
+  equal((await readFile(activeGatewayPaths.identity)).equals(activeIdentityPrior), true, "active upgrade rollback retains the prior gateway identity");
+  equal(JSON.stringify([...activeRoleUpgrade.environment]), JSON.stringify(activeEnvironmentPrior), "active upgrade rollback restores the previous managed environment");
+  equal((await activeRoleUpgrade.taskAdapter.status({ name: "fixture" })).state, "Running", "active upgrade rollback restores the previous owned Task state");
+
   const bytes = Buffer.from([0, 255, 1, 2, 128]);
   const encoded = encodeJournal({ sample: bytes, absent: null });
   const decoded = decodeJournal(encoded);

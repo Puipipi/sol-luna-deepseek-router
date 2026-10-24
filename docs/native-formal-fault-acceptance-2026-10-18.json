@@ -34,6 +34,57 @@
       "failure_cause_known": false
     }
   },
+  "disposable_task_restart_diagnostic": {
+    "scope": "isolated_disposable_owned_task_only",
+    "initial_attempt": {
+      "status": "failed_closed",
+      "error_code": "TASK_CLEANUP_NOT_SAFE",
+      "receipt_sha256": "56f2d0032efc2f1dc7795e9a9e3e3792a44f7e6328b40643a2e4e828ad7738bd",
+      "raw_command_line_text_gate_rejected_sigterm": true,
+      "signal_sent": false
+    },
+    "fixed_exit_case": {
+      "stub_exit_code": 42,
+      "wsh_child_return_code": 42,
+      "launch_count": 1,
+      "observation_ms": 83675,
+      "task_poll_count": 29,
+      "all_polls_ready_with_result_and_exact_spec": true,
+      "second_start_observed": false
+    },
+    "sigterm_continuation": {
+      "receipt_sha256": "fa40ae79494a42eb9b70c1d267ef117287b7584ac40fe78d6eeab65d80ab2b05",
+      "pid_creation_time_executable_and_full_argv_verified": true,
+      "raw_command_line_text_match": false,
+      "full_argv_tokens_match": true,
+      "signal_count": 1,
+      "handler_entered": false,
+      "launch_count": 1,
+      "wsh_child_return_code": 1,
+      "observation_ms": 82845,
+      "task_poll_count": 33,
+      "all_polls_ready_with_result_and_exact_spec": true,
+      "second_start_observed": false
+    },
+    "diagnostic_task_template": {
+      "restart_count": 3,
+      "restart_interval_seconds": 60,
+      "hidden_synchronous_wsh": true,
+      "wsh_return_code_capture_added": true,
+      "production_launcher_bytes_unchanged": false
+    },
+    "cleanup": {
+      "both_tasks_absent": true,
+      "owned_stub_remains": false,
+      "formal_gateway_service_untouched": true
+    },
+    "inference": {
+      "formal_task_restart_root_cause_established": false,
+      "os_restart_on_failure_is_dependable": false,
+      "accepted_recovery_path": "existing_readiness_and_dispatch_gate",
+      "root_codex_connection_independent": true
+    }
+  },
   "formal_task_port_conflict": {
     "result": "port_conflict_rejected_and_recovered",
     "receipt_sha256": "1521b3c9fb30f58d65263c298ce6068b6fbd859ff16c2f38dd6e3d955f98ecf0",

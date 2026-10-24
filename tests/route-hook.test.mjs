@@ -12,10 +12,19 @@ import { decideRoute } from '../scripts/route.mjs';
 import {
   buildNotification, handleHook, isChildExecutor, notificationKey,
 } from '../scripts/route-hook.mjs';
+import { createApiProfile } from '../scripts/native-api-settings.mjs';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const hookPath = path.join(repoRoot, 'scripts', 'route-hook.mjs');
 const shanghai = '+08:00';
+const priorCodexHome = process.env.CODEX_HOME;
+const priorLocalAppData = process.env.LOCALAPPDATA;
+process.env.CODEX_HOME = path.join(os.tmpdir(), `route-hook-test-codex-home-${process.pid}`);
+process.env.LOCALAPPDATA = path.join(os.tmpdir(), `route-hook-test-local-${process.pid}`);
+process.on('exit', () => {
+  if (priorCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = priorCodexHome;
+  if (priorLocalAppData === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = priorLocalAppData;
+});
 // Keep every test away from the real user's sticky override state. Individual
 // manual-override tests pass their own directory; everything else uses this
 // empty, isolated root.
@@ -264,11 +273,51 @@ ok(peakNotice.includes(peakAt.toISOString()), 'notice includes the evaluated ins
 equal(notificationKey(peakRoute), 'peak|luna|schedule', 'notification key is stable');
 ok(notificationKey({ ...peakRoute, phase: 'valley' }) !== notificationKey(peakRoute), 'phase changes the key');
 ok(notificationKey({ ...peakRoute, source: 'session_override' }) !== notificationKey(peakRoute), 'source changes the key');
-equal(isChildExecutor({ model: 'gpt-6-luna' }), true, 'Luna model turns are treated as child work');
-equal(isChildExecutor({ model: 'deepseek/deepseek-flash' }), true, 'native DeepSeek child turns are suppressed');
+const fixedRoute = {
+  phase: 'fixed',
+  executor: 'luna',
+  source: 'fixed',
+  reason: 'fixed executor selection; calendar not consulted',
+  timezone: 'Asia/Shanghai',
+};
+const fixedNotice = buildNotification(fixedRoute, peakAt);
+ok(fixedNotice.includes('Schedule: fixed'), 'fixed notice names the fixed phase');
+ok(fixedNotice.includes('fixed executor selection'), 'fixed notice explains the fixed source');
+ok(!fixedNotice.includes('automatic schedule'), 'fixed notice must not claim an automatic schedule');
+ok(fixedNotice.includes('calendar not consulted'), 'fixed notice explains that the calendar is unused');
+equal(isChildExecutor({ model: 'gpt-6-luna' }), false, 'a Luna model name alone does not identify a child');
+equal(isChildExecutor({ model: 'deepseek/deepseek-flash' }), false, 'a DeepSeek model name alone does not identify a child');
 equal(isChildExecutor({ model: 'openai/gpt-6.1-sol' }), false, 'Sol model turns are not treated as children');
 equal(isChildExecutor({ model: 'gpt-6.1-sol', agent_type: 'subagent' }), true, 'explicit subagent evidence is respected');
 equal(isChildExecutor({ model: undefined }), false, 'unknown model evidence is tolerated');
+
+const hookApiProfile = createApiProfile({
+  protocol: 'responses', baseUrl: 'https://api.example.invalid/v1', model: 'example-child-model',
+  reasoning: { supported: ['none'], default: 'none', parameter: 'none' },
+  credential: { type: 'env', name: 'EXAMPLE_API_KEY' },
+});
+const hookApiSettings = {
+  schemaVersion: 1, mode: 'fixed', fixedExecutor: hookApiProfile.profileId,
+  profiles: { [hookApiProfile.profileId]: hookApiProfile },
+};
+equal(isChildExecutor({ model: hookApiProfile.model }, hookApiSettings.profiles), false,
+  'configured API model alone does not identify a child');
+const apiChildHookDir = await mkdtemp(path.join(os.tmpdir(), 'route-hook-api-child-'));
+try {
+  const result = await handleHook({
+    input: inputFor('api-child-session', 'PreToolUse', hookApiProfile.model),
+    now: new Date(`2026-10-19T10:30:00${shanghai}`),
+    hookStateDir: apiChildHookDir,
+    overrideStateDir: isolatedOverrideDir,
+    routerSettings: hookApiSettings,
+  });
+  ok(Boolean(result.output?.hookSpecificOutput.additionalContext), 'a parent using the API model is not silently suppressed');
+  equal(result.reason, undefined, 'model name alone does not report child identity');
+  equal((await readdir(apiChildHookDir)).filter(name => name.endsWith('.json')).length, 1,
+    'the parent receives its own notification state');
+} finally {
+  await rm(apiChildHookDir, { recursive: true, force: true });
+}
 
 // Weekday boundaries: initial notice then only changes.
 const boundaryDir = await mkdtemp(path.join(os.tmpdir(), 'route-hook-boundary-'));
@@ -316,6 +365,88 @@ try {
   equal(preToolAgain.output, null, 'same PreToolUse phase must not repeat');
 } finally {
   await rm(boundaryDir, { recursive: true, force: true });
+}
+
+// Fixed mode consults no calendar, announces once, and reminds again only when
+// the effective fixed profile changes.
+const fixedHookDir = await mkdtemp(path.join(os.tmpdir(), 'route-hook-fixed-'));
+try {
+  const fixedA = createApiProfile({
+    protocol: 'responses', baseUrl: 'https://api.fixed-a.invalid/v1', model: 'fixed-model-a',
+    reasoning: { supported: ['none'], default: 'none', parameter: 'none' },
+    credential: { type: 'env', name: 'FIXED_A_API_KEY' },
+  });
+  const fixedB = createApiProfile({
+    protocol: 'responses', baseUrl: 'https://api.fixed-b.invalid/v1', model: 'fixed-model-b',
+    reasoning: { supported: ['none'], default: 'none', parameter: 'none' },
+    credential: { type: 'env', name: 'FIXED_B_API_KEY' },
+  });
+  const fixedProfiles = { [fixedA.profileId]: fixedA, [fixedB.profileId]: fixedB };
+  const fixedSettings = (profileId) => ({
+    schemaVersion: 1, mode: 'fixed', fixedExecutor: profileId, profiles: fixedProfiles,
+  });
+  const sessionId = 'fixed-profile-chat';
+  const at = new Date(`2026-10-19T10:30:00${shanghai}`);
+  const scheduledSettings = {
+    schemaVersion: 1, mode: 'scheduled',
+    schedule: { peak: 'luna', valley: 'deepseek' },
+    profiles: fixedProfiles,
+  };
+  const peakSchedule = await decideRoute({ at, routerSettings: scheduledSettings });
+  const valleySchedule = await decideRoute({
+    at: new Date(`2026-10-19T13:30:00${shanghai}`),
+    routerSettings: scheduledSettings,
+  });
+  equal(peakSchedule.phase, 'peak', 'the first fixed-mode evaluation coincides with a peak phase');
+  equal(valleySchedule.phase, 'valley', 'the second fixed-mode evaluation coincides with a valley phase');
+
+  let result = await handleHook({
+    input: inputFor(sessionId),
+    now: at,
+    hookStateDir: fixedHookDir,
+    overrideStateDir: isolatedOverrideDir,
+    routerSettings: fixedSettings(fixedA.profileId),
+  });
+  const firstNotice = result.output?.hookSpecificOutput.additionalContext || '';
+  ok(firstNotice.includes('Schedule: fixed'), 'fixed mode initial notice names the fixed schedule');
+  ok(firstNotice.includes(fixedA.profileId), 'fixed mode notice names the effective profile');
+  ok(!firstNotice.includes('automatic schedule'), 'fixed mode notice never claims an automatic schedule');
+  ok(firstNotice.includes('calendar not consulted'), 'fixed mode notice explains the calendar is unused');
+
+  result = await handleHook({
+    input: inputFor(sessionId),
+    now: new Date(`2026-10-19T13:30:00${shanghai}`),
+    hookStateDir: fixedHookDir,
+    overrideStateDir: isolatedOverrideDir,
+    routerSettings: fixedSettings(fixedA.profileId),
+  });
+  equal(result.output, null, 'fixed profile stays silent across a peak-to-valley boundary');
+
+  result = await handleHook({
+    input: inputFor(sessionId),
+    now: at,
+    hookStateDir: fixedHookDir,
+    overrideStateDir: isolatedOverrideDir,
+    routerSettings: fixedSettings(fixedB.profileId),
+  });
+  const changedNotice = result.output?.hookSpecificOutput.additionalContext || '';
+  ok(changedNotice.includes(fixedB.profileId), 'a changed fixed profile is announced');
+  ok(!changedNotice.includes('automatic schedule'), 'a changed fixed profile still avoids the automatic wording');
+
+  result = await handleHook({
+    input: inputFor(sessionId),
+    now: at,
+    hookStateDir: fixedHookDir,
+    overrideStateDir: isolatedOverrideDir,
+    routerSettings: fixedSettings(fixedB.profileId),
+  });
+  equal(result.output, null, 'the changed fixed profile is announced only once');
+
+  const stored = JSON.parse(await readFile(stateFile(fixedHookDir, sessionId), 'utf8'));
+  equal(stored.lastSource, 'fixed', 'fixed notification state records the fixed source');
+  equal(stored.lastPhase, 'fixed', 'fixed notification state records the fixed phase');
+} finally {
+  await rm(fixedHookDir, { recursive: true, force: true });
 }
 
 // Weekend, holiday, and unknown-calendar behavior.
@@ -426,11 +557,11 @@ try {
   await rm(sessionsDir, { recursive: true, force: true });
 }
 
-// Child Luna work is ignored and does not create notification state.
+// Explicit child role evidence is ignored and does not create notification state.
 const childDir = await mkdtemp(path.join(os.tmpdir(), 'route-hook-child-'));
 try {
   const result = await handleHook({
-    input: inputFor('child-luna-session', 'PreToolUse', 'gpt-6-luna'),
+    input: {...inputFor('child-luna-session', 'PreToolUse', 'gpt-6-luna'), agent_type: 'native_subagent'},
     now: new Date(`2026-10-19T10:30:00${shanghai}`),
     hookStateDir: childDir,
     overrideStateDir: isolatedOverrideDir,
@@ -490,8 +621,8 @@ equal(config.hooks.UserPromptSubmit[0].hooks[0].timeout, 10, 'hook timeout is bo
 equal(config.hooks.PreToolUse[0].hooks[0].additionalContextLimit, 2000, 'hook context is bounded');
 
 // The command must work from the plugin root rather than the user's workspace,
-// including a plugin path with spaces. Copy just the two runtime modules into a
-// temporary plugin-shaped tree and launch from an unrelated directory.
+// including a plugin path with spaces. Copy the route runtime dependency set
+// into a temporary plugin-shaped tree and launch from an unrelated directory.
 const spaceRoot = await mkdtemp(path.join(os.tmpdir(), 'route-hook-space-'));
 try {
   const pluginRoot = path.join(spaceRoot, 'plugin root with spaces');
@@ -501,6 +632,13 @@ try {
   await mkdir(unrelated, { recursive: true });
   await cp(path.join(repoRoot, 'scripts', 'route-hook.mjs'), path.join(pluginScripts, 'route-hook.mjs'));
   await cp(path.join(repoRoot, 'scripts', 'route.mjs'), path.join(pluginScripts, 'route.mjs'));
+  await cp(path.join(repoRoot, 'scripts', 'native-model-catalog.mjs'), path.join(pluginScripts, 'native-model-catalog.mjs'));
+  await cp(path.join(repoRoot, 'scripts', 'native-current-model.mjs'), path.join(pluginScripts, 'native-current-model.mjs'));
+  await cp(path.join(repoRoot, 'scripts', 'native-upgrade-status.mjs'), path.join(pluginScripts, 'native-upgrade-status.mjs'));
+  await cp(path.join(repoRoot, 'scripts', 'native-api-settings.mjs'), path.join(pluginScripts, 'native-api-settings.mjs'));
+  await cp(path.join(repoRoot, 'scripts', 'native-state.mjs'), path.join(pluginScripts, 'native-state.mjs'));
+  await cp(path.join(repoRoot, 'scripts', 'native-credentials.mjs'), path.join(pluginScripts, 'native-credentials.mjs'));
+  await cp(path.join(repoRoot, 'scripts', 'plugin-state.mjs'), path.join(pluginScripts, 'plugin-state.mjs'));
   const stateDir = path.join(spaceRoot, 'hook state');
   const overrideDir = path.join(spaceRoot, 'override state');
   const now = `2026-10-19T12:00:00${shanghai}`;

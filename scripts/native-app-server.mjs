@@ -1,6 +1,22 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import net from "node:net";
+
+function terminateWindowsProcessTree(pid, timeoutMs) {
+  const result = spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+    encoding: "utf8",
+    shell: false,
+    stdio: "ignore",
+    timeout: Math.max(1, timeoutMs),
+    windowsHide: true,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw Object.assign(new Error("taskkill.exe did not confirm process-tree termination"), {
+      code: "APP_SERVER_TREE_TERMINATION_FAILED",
+    });
+  }
+}
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -62,13 +78,14 @@ function isolatedChildEnvironment(codexHome, envOverrides) {
 }
 
 export class AppServer {
-  constructor({ exe, codexHome, cwd, eventLog, envOverrides = {}, spawnProcess = spawn }) {
+  constructor({ exe, codexHome, cwd, eventLog, envOverrides = {}, spawnProcess = spawn, terminateProcessTree = terminateWindowsProcessTree }) {
     this.exe = exe;
     this.codexHome = codexHome;
     this.cwd = cwd;
     this.eventLog = eventLog;
     this.envOverrides = envOverrides;
     this.spawnProcess = spawnProcess;
+    this.terminateProcessTree = terminateProcessTree;
     this.child = null;
     this.spawnError = null;
     this.liveOwnedProcess = false;
@@ -214,6 +231,7 @@ export class AppServer {
       this.child = null;
       return;
     }
+    child.stdin?.end();
     const started = Date.now();
     const deadline = started + Math.max(1, timeoutMs);
     const normalDeadline = Math.min(deadline, started + Math.max(0, killAfterMs));
@@ -244,8 +262,23 @@ export class AppServer {
     });
     let exited = await waitForExit(normalDeadline);
     if (!exited && !hasExited()) {
-      try { child.kill(); } catch { /* only the child this instance owns */ }
+      let terminationError = null;
+      try {
+        if (process.platform === "win32" && Number.isSafeInteger(child.pid) && child.pid > 0) {
+          this.terminateProcessTree(child.pid, Math.max(1, deadline - Date.now()));
+        } else {
+          child.kill();
+        }
+      } catch (error) {
+        terminationError = error;
+      }
       exited = await waitForExit(deadline);
+      if (!exited && !hasExited() && terminationError) {
+        throw Object.assign(new Error("owned app-server process tree could not be terminated"), {
+          code: "APP_SERVER_EXIT_TIMEOUT",
+          cause: terminationError,
+        });
+      }
     }
     if (!exited && hasExited()) {
       this.exitObserved = true;

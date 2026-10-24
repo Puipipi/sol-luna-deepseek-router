@@ -67,7 +67,7 @@ function freePort() {
 }
 
 export async function gatewayHealth(state, timeoutMs = 2_000) {
-  if (!state?.port || !state?.token) return { reachable: false, pid: null, deepseek_only: null, relay_allowed: null };
+  if (!state?.port || !state?.token) return { reachable: false, pid: null, deepseek_only: null, api_only: null, relay_allowed: null };
   try {
     const response = await fetch(`http://127.0.0.1:${state.port}/${state.token}/_health`, {
       signal: AbortSignal.timeout(timeoutMs),
@@ -78,10 +78,11 @@ export async function gatewayHealth(state, timeoutMs = 2_000) {
       reachable: health?.ok === true,
       pid: Number.isInteger(health?.pid) && health.pid > 0 ? health.pid : null,
       deepseek_only: health?.deepseek_only === true ? true : health?.deepseek_only === false ? false : null,
+      api_only: health?.api_only === true ? true : health?.api_only === false ? false : null,
       relay_allowed: health?.relay_allowed === true ? true : health?.relay_allowed === false ? false : null,
     };
   } catch {
-    return { reachable: false, pid: null, deepseek_only: null, relay_allowed: null };
+    return { reachable: false, pid: null, deepseek_only: null, api_only: null, relay_allowed: null };
   }
 }
 

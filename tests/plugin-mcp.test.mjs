@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {mkdir, mkdtemp, rm} from 'node:fs/promises';
+import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createPluginMcp, trustedThreadId} from '../scripts/plugin-mcp.mjs';
+import {NativeTasks} from '../scripts/native-state.mjs';
 import {createTraceService} from '../scripts/plugin-trace.mjs';
 import {canonicalWorkspace, hashThread, workspaceKey, writeJsonAtomic} from '../scripts/plugin-state.mjs';
 
@@ -30,6 +31,14 @@ function detailHrefFor(body, eventId) {
 }
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'sol-plugin-mcp-'));
+const priorCodexHome = process.env.CODEX_HOME;
+const priorLocalAppData = process.env.LOCALAPPDATA;
+process.env.CODEX_HOME = path.join(root, 'codex-home');
+process.env.LOCALAPPDATA = path.join(root, 'local-app-data');
+process.on('exit', () => {
+  if (priorCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = priorCodexHome;
+  if (priorLocalAppData === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = priorLocalAppData;
+});
 const workspace = path.join(root, 'workspace');
 const workspace2 = path.join(root, 'workspace-2');
 for (const name of ['workspace', 'workspace-2', 'workspace-8', 'workspace-9', 'workspace-parallel', 'workspace-start-fail', 'workspace-start-uncertain', 'workspace-no-id', 'workspace-taken', 'workspace-dead', 'workspace-unavailable', 'workspace-reservation', 'workspace-followup']) {
@@ -155,6 +164,7 @@ function isError(response) {
 try {
   const init = await server.handle({jsonrpc: '2.0', id: 0, method: 'initialize', params: {protocolVersion: '2025-06-18'}});
   equal(init.result.serverInfo.name, 'sol-luna-deepseek-router', 'initialize identifies the plugin server');
+  equal(init.result.serverInfo.version, '0.12.3', 'initialize reports the integrated plugin version');
   equal(init.result.protocolVersion, '2025-06-18', 'initialize negotiates a supported protocol');
   match(init.result.instructions, /_meta\.threadId/, 'initialize documents the trusted identity requirement');
   match(init.result.instructions, /not native Codex children/, 'initialize states the native-child limitation');
@@ -163,6 +173,89 @@ try {
   const names = listed.result.tools.map(tool => tool.name);
   for (const name of ['dsh_start', 'dsh_status', 'dsh_wait', 'dsh_followup', 'dsh_list', 'dsh_interrupt', 'dsh_close', 'dsh_rename', 'dsh_events', 'dsh_trace']) {
     ok(names.includes(name), `tools/list includes ${name}`);
+  }
+
+  {
+    let diagnosticCaller = null;
+    const diagnosticChildren = new Map();
+    const contextStateDir = path.join(root, 'model-context-state');
+    const nativeTasks = new NativeTasks({stateDir: contextStateDir});
+    for (const [parentThreadId, childThreadId, taskNonce, executor, model] of [
+      ['chat-a', 'chat-a-api-child', 'diag-chat-a-001', 'api', 'mock-a'],
+      ['chat-b', 'chat-b-deepseek-child', 'diag-chat-b-001', 'deepseek', 'deepseek/deepseek-flash'],
+    ]) {
+      const profileId = 'abcdefabcdefabcdefabcdef';
+      await nativeTasks.reserveDispatch({parentThreadId, taskNonce, executor, profileId: executor === 'api' ? profileId : null, model});
+      await nativeTasks.begin({parentThreadId, childThreadId, taskNonce, model, binding: executor === 'api'
+        ? {executor, profileId, model, role: `native_api_${profileId}`, providerId: `api-native-${profileId}`}
+        : {executor, model, role: 'native_deepseek'}});
+    }
+    const contextServer = createPluginMcp({
+      stateDir: contextStateDir,
+      settingsPath: path.join(root, 'model-context-router.json'),
+      readNativeModels: async () => [],
+      readCurrentModel: async ({threadId}) => ({model: threadId === 'chat-a' ? 'gpt-6.1-sol' : 'gpt-6-astra', provider: 'openai'}),
+      guardStatus: async () => ({state: 'unmanaged'}),
+      collectDiagnostics: async ({parentThreadId, registeredChildThreadIds}) => {
+        diagnosticCaller = parentThreadId;
+        diagnosticChildren.set(parentThreadId, registeredChildThreadIds);
+        return {available: true, rootCause: 'uncertain', events: []};
+      },
+    });
+    try {
+      const readFor = async (threadId, id) => contextServer.handle({jsonrpc: '2.0', id, method: 'tools/call', params: {
+        name: 'router_settings_snapshot', arguments: {}, _meta: {threadId},
+      }});
+      const a1 = payload(await readFor('chat-a', 21));
+      const b = payload(await readFor('chat-b', 22));
+      const a2 = payload(await readFor('chat-a', 23));
+      equal(a1.currentMainModel.model, 'gpt-6.1-sol', 'snapshot resolves chat A from trusted per-request metadata');
+      equal(b.currentMainModel.model, 'gpt-6-astra', 'same MCP server resolves chat B independently');
+      equal(a2.currentMainModel.model, 'gpt-6.1-sol', 'interleaved requests do not retain the previous caller model');
+      const diagnostic = payload(await contextServer.handle({jsonrpc: '2.0', id: 24, method: 'tools/call', params: {
+        name: 'router_connection_diagnostics', arguments: {}, _meta: {threadId: 'chat-b'},
+      }}));
+      equal(diagnosticCaller, 'chat-b', 'explicit connection diagnostic uses the trusted MCP caller context');
+      const diagnosticForA = payload(await contextServer.handle({jsonrpc: '2.0', id: 27, method: 'tools/call', params: {
+        name: 'router_connection_diagnostics', arguments: {}, _meta: {threadId: 'chat-a'},
+      }}));
+      const diagnosticForUnknown = payload(await contextServer.handle({jsonrpc: '2.0', id: 28, method: 'tools/call', params: {
+        name: 'router_connection_diagnostics', arguments: {}, _meta: {threadId: 'chat-unknown'},
+      }}));
+      deepEqual(diagnosticChildren.get('chat-a'), ['chat-a-api-child'], 'diagnostics correlate only children owned by chat A');
+      deepEqual(diagnosticChildren.get('chat-b'), ['chat-b-deepseek-child'], 'diagnostics correlate only children owned by chat B');
+      deepEqual(diagnosticChildren.get('chat-unknown'), [], 'unknown parent receives no guessed or cross-chat children');
+      const forgedChildren = await contextServer.handle({jsonrpc: '2.0', id: 29, method: 'tools/call', params: {
+        name: 'router_connection_diagnostics', arguments: {registeredChildThreadIds: ['chat-b-deepseek-child']}, _meta: {threadId: 'chat-a'},
+      }});
+      ok(isError(forgedChildren), 'MCP clients cannot inject diagnostic child identifiers');
+      deepEqual(diagnosticChildren.get('chat-a'), ['chat-a-api-child'], 'rejected client IDs never enter diagnostic correlation');
+      const missingDiagnosticContext = await contextServer.handle({jsonrpc: '2.0', id: 26, method: 'tools/call', params: {
+        name: 'router_connection_diagnostics', arguments: {},
+      }});
+      ok(isError(missingDiagnosticContext), 'diagnostics refuse to collect without trusted caller metadata');
+      equal(diagnosticCaller, 'chat-unknown', 'missing caller metadata does not trigger another local log read');
+    } finally {
+      await contextServer.close();
+    }
+  }
+
+  {
+    const disabledSettings = path.join(root, 'diagnostics-disabled-router.json');
+    await writeFile(disabledSettings, JSON.stringify({schemaVersion: 1, enabled: false, mode: 'fixed', fixedExecutor: 'luna', schedule: {peak: 'luna', valley: 'deepseek'}, profiles: {}}));
+    let diagnosticReads = 0;
+    const diagnosticServer = createPluginMcp({
+      stateDir: path.join(root, 'diagnostics-disabled-state'), settingsPath: disabledSettings,
+      guardStatus: async () => ({state: 'unmanaged'}), readNativeModels: async () => [],
+      collectDiagnostics: async () => { diagnosticReads += 1; return {available: true, rootCause: 'uncertain', events: []}; },
+    });
+    try {
+      const disabledDiagnostic = payload(await diagnosticServer.handle({jsonrpc: '2.0', id: 25, method: 'tools/call', params: {
+        name: 'router_connection_diagnostics', arguments: {}, _meta: {threadId: 'chat-a'},
+      }}));
+      equal(disabledDiagnostic.available, false, 'disabled routing returns unavailable without reading logs');
+      equal(diagnosticReads, 0, 'disabled routing performs zero diagnostic collection I/O');
+    } finally { await diagnosticServer.close(); }
   }
 
   assert.throws(() => trustedThreadId({_meta: {}}), /Missing trusted request _meta\.threadId/);
@@ -532,6 +625,37 @@ try {
     const invalidStart = await call('dsh_start', {task: 'x', cwd: 'relative/path'}, 'chat-one');
     ok(isError(invalidStart), 'relative cwd is rejected');
     match(text(invalidStart), /absolute path/, 'the cwd requirement is explicit');
+  }
+
+  {
+    const settingsPath = path.join(root, 'router-off.json');
+    await writeJsonAtomic(settingsPath, {
+      schemaVersion: 1,
+      enabled: false,
+      mode: 'fixed',
+      fixedExecutor: 'deepseek',
+      schedule: {peak: 'luna', valley: 'deepseek'},
+      profiles: {},
+    });
+    const offCalls = [];
+    const offServer = createPluginMcp({
+      settingsPath,
+      stateDir: path.join(root, 'off-state'),
+      runClient: async request => { offCalls.push(request); return textResult({agent_id: 'unexpected'}); },
+    });
+    const invokeOff = (name, args) => offServer.handle({jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+      name, arguments: args, _meta: {threadId: 'disabled-chat'},
+    }});
+    try {
+      const offStart = await invokeOff('dsh_start', {task: 'must not start', cwd: workspace, model: 'deepseek-flash'});
+      ok(offStart.result?.isError, 'disabled routing rejects new DSH starts');
+      match(offStart.result.content[0].text, /分工已关闭/, 'disabled DSH response explains the setting');
+      const offFollowup = await invokeOff('dsh_followup', {agent_id: 'existing-agent', task: 'must not continue'});
+      ok(offFollowup.result?.isError, 'disabled routing rejects new DSH follow-ups');
+      equal(offCalls.length, 0, 'disabled DSH start and follow-up never reach backend');
+    } finally {
+      await offServer.close();
+    }
   }
 } finally {
   await server.close();

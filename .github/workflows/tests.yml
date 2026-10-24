@@ -15,6 +15,16 @@ jobs:
       - run: node tests/route.test.mjs
       - run: node tests/route-hook.test.mjs
       - run: node tests/dsh-mcp-client.test.mjs
+      - run: node tests/native-api-settings.test.mjs
+      - run: node tests/native-api-routing.test.mjs
+      - run: node tests/native-api-protocol.test.mjs
+      - run: node tests/native-current-model.test.mjs
+      - run: node tests/native-execution-lifecycle.test.mjs
+      - run: node tests/native-api-maintenance-race.test.mjs
+      - run: node tests/native-connection-diagnostics.test.mjs
+      - run: node tests/native-bootstrap-install.test.mjs
+      - run: node tests/native-upgrade-guard.test.mjs
+      - run: node tests/native-api-artifacts.test.mjs
       - run: node tests/docs.test.mjs
       - run: node scripts/patch-backend-windows.test.mjs
       - name: Plugin tests (only when present)
@@ -45,6 +55,8 @@ jobs:
           }
       - name: Native gateway tests (mocked/free, no model)
         shell: pwsh
+        env:
+          CC: gcc
         run: |
           $tests = @(
             'native-routing',
@@ -54,6 +66,13 @@ jobs:
             'native-gateway-account-auth',
             'native-state',
             'native-agent',
+            'native-current-model',
+            'native-execution-lifecycle',
+            'native-connection-diagnostics',
+            'native-bootstrap',
+            'native-bootstrap-install',
+            'native-upgrade-guard',
+            'native-bootstrap-maintenance',
             'native-isolated-config',
             'native-isolated-files',
             'native-isolated-smoke',
@@ -67,6 +86,14 @@ jobs:
             'native-gateway-task',
             'native-gateway-source',
             'native-transport-faults',
+            'native-api-artifacts',
+            'native-api-settings',
+            'native-api-routing',
+            'native-api-protocol',
+            'native-api-install',
+            'native-api-manager',
+            'native-api-lifecycle',
+            'native-api-origin',
             'normalize-cargo-workspace-lock'
           )
           foreach ($name in $tests) {
@@ -80,6 +107,19 @@ jobs:
       - name: Native config/read local gate (requires local Codex)
         if: ${{ vars.RUN_NATIVE_CONFIG_READ == 'true' }}
         shell: pwsh
-        run: node tests/native-config-read.test.mjs
+        run: |
+          node tests/native-config-read.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tests/native-api-config-read.test.mjs
+      # Opt-in real-CLI adapter smoke. This step must fail, not silently skip,
+      # when the gate is enabled without an explicit binary and hash.
+      - name: Native API CLI smoke (opt-in, explicit binary/hash)
+        if: ${{ vars.RUN_NATIVE_API_CLI_SMOKE == 'true' }}
+        shell: pwsh
+        run: |
+          if (-not $env:SOL_LUNA_NATIVE_API_SMOKE_BINARY -or -not $env:SOL_LUNA_NATIVE_API_SMOKE_SHA256) {
+            throw 'RUN_NATIVE_API_CLI_SMOKE is true but SOL_LUNA_NATIVE_API_SMOKE_BINARY/SHA256 are not set'
+          }
+          node tests/native-api-cli-smoke.mjs
       - shell: pwsh
         run: ./tests/dsh-agent-helper.test.ps1

@@ -6,7 +6,11 @@ const readme = read('README.md');
 const skill = read('SKILL.md');
 const pluginDoc = read('PLUGIN.md');
 const pluginManifest = JSON.parse(read('.codex-plugin/plugin.json'));
+const nativePluginCandidate = read('docs/native-plugin-candidate-0.10.5-2026-10-18.md');
 const nativeBuild = read('docs/native-isolated-cli-build.md');
+const nativeApiRoleFix = read('docs/native-api-role-registration-0.11.2-2026-10-19.md');
+const nativeApiInstructionsFix = read('docs/native-api-catalog-instructions-0.11.3-2026-10-19.md');
+const nativeApiAgentMessageFix = read('docs/native-api-agent-message-0.11.4-2026-10-19.md');
 const nativeInstaller = read('docs/native-isolated-install.md');
 const nativeLifecycleText = read('docs/native-gateway-lifecycle-2026-10-18.json');
 JSON.parse(nativeLifecycleText);
@@ -24,6 +28,37 @@ assert.doesNotMatch(marketplace.plugins[0].source.path, /^(?:[A-Za-z]:[\\/]|\\\\
 assert.equal(marketplace.plugins[0].policy.installation, 'AVAILABLE', 'the marketplace installation policy is explicit');
 assert.equal(marketplace.plugins[0].policy.authentication, 'ON_INSTALL', 'the marketplace auth policy is explicit');
 assert.equal(marketplace.plugins[0].category, 'Developer Tools', 'the marketplace category is explicit');
+assert.match(pluginManifest.version, /^\d+\.\d+\.\d+$/, 'the canonical plugin manifest carries a valid release version');
+assert.match(nativeApiRoleFix, /0\.11\.1/i, 'the 0.11.2 fix record identifies the affected version');
+assert.match(nativeApiRoleFix, /unknown agent_type/i, 'the 0.11.2 fix record captures the failed first real role dispatch');
+assert.match(nativeApiRoleFix, /config\/read/i, 'the fix record limits loader evidence to config/read');
+assert.match(readme, /native-api-role-registration-0\.11\.2-2026-10-19/);
+assert.match(pluginDoc, /native-api-role-registration-0\.11\.2-2026-10-19/);
+assert.match(readme, /native-api-catalog-instructions-0\.11\.3-2026-10-19/);
+assert.match(pluginDoc, /native-api-catalog-instructions-0\.11\.3-2026-10-19/);
+assert.match(pluginDoc, /native-api-agent-message-0\.11\.4-2026-10-19/);
+assert.match(skill, /native-api-catalog-instructions-0\.11\.3-2026-10-19/);
+assert.match(nativeApiInstructionsFix, /before child creation/i);
+assert.match(nativeApiInstructionsFix, /model\/list.*not parse/i);
+assert.match(nativeApiInstructionsFix, /apiVerified.*false/i);
+assert.match(readme, /native-api-agent-message-0\.11\.4-2026-10-19/);
+assert.match(pluginDoc, /native-api-agent-message-0\.11\.4-2026-10-19/);
+assert.match(skill, /native-api-agent-message-0\.11\.4-2026-10-19/);
+assert.match(skill, /should not send unsolicited user-facing progress/i);
+assert.match(skill, /one concise internal handoff/i);
+assert.match(nativeApiAgentMessageFix, /task execution did not pass/i);
+assert.match(nativeApiAgentMessageFix, /apiVerified.*false/i);
+assert.doesNotMatch(readme, /currently installed 0\.10\.5\/6ec/i, 'README does not describe the historical runtime as current');
+assert.doesNotMatch(pluginDoc, /actual isolated CLI installation has not been run/i, 'PLUGIN reflects the recorded formal installation');
+assert.match(readme, /^# Sol 主控 · 多模型峰谷子代理$/m, 'README uses the unified display name');
+assert.match(skill, /^# Sol 主控 · 多模型峰谷子代理$/m, 'SKILL.md uses the unified display name');
+assert.match(pluginDoc, /^# Sol 主控 · 多模型峰谷子代理$/m, 'PLUGIN.md uses the unified display name');
+assert.match(readme, /\$sol-luna-deepseek-router/, 'README names the canonical skill');
+assert.match(skill, /\$sol-luna-deepseek-router|name: sol-luna-deepseek-router/, 'SKILL.md keeps the canonical skill name');
+assert.match(pluginDoc, /\$sol-luna-deepseek-router/, 'PLUGIN.md names the canonical skill');
+assert.match(nativePluginCandidate, /0\.10\.5/);
+assert.match(nativePluginCandidate, /bounded.*retry/i);
+assert.match(nativePluginCandidate, /GREEN/i, 'the candidate note must keep runtime build status explicit');
 
 const hookCommand = 'node "${PLUGIN_ROOT}/scripts/route-hook.mjs"';
 assert.equal(hooks.hooks.UserPromptSubmit[0].hooks[0].command, hookCommand, 'UserPromptSubmit must use the quoted plugin root');
@@ -77,19 +112,21 @@ assert.match(readme, /relay cap is forced to zero/i);
 assert.match(pluginDoc, /--deepseek-only/);
 assert.match(nativeInstaller, /Task 状态为 `Running`/);
 assert.match(skill, /--install-journal/);
-assert.match(skill, /before each DeepSeek `followup_task`/);
+assert.match(skill, /For each DeepSeek follow-up, rerun the gate/);
+assert.match(skill, /observed executable must match the approved patched binary hash/);
+assert.match(skill, /路由关闭时点击“应用 API 配置”保持未应用/);
 assert.match(skill, /does not create native Codex child sessions/);
 for (const command of ['prepare', 'activate', 'rollback', 'status']) assert.match(skill, new RegExp(`\\b${command}\\b`), `SKILL.md must list installer command ${command}`);
 assert.match(skill, /ordinary task routing.*never run them/i, 'SKILL.md must keep ordinary routing separate from setup');
 assert.match(skill, /explicitly asks to set up or activate.*authorizes.*without another approval prompt/i, 'SKILL.md must avoid redundant approval for an explicitly requested setup');
 assert.match(skill, /native-formal-install-2026-10-18\.md.*other hosts require local verification/i, 'SKILL.md must link the host-specific install record and require local verification elsewhere');
-assert.match(skill, /desktop acceptance remains pending|desktop acceptance.*still pending/i, 'SKILL.md must distinguish configured source from desktop acceptance');
+assert.match(skill, /host-specific desktop evidence is in.*desktop acceptance record/i, 'SKILL.md must link tested host-specific desktop evidence');
 assert.doesNotMatch(skill, /ACL file lock|blocks the intended UI check/i, 'SKILL.md must not preserve the obsolete UI blocker claim');
 assert.doesNotMatch(skill, /node \.\\scripts\\native-install\.mjs install/i, 'SKILL.md must not present the old shared-root installer as the setup path');
 assert.match(readme, /formal native DeepSeek route.*native_deepseek.*provider/i, 'README must present the isolated role/provider as the formal route');
 assert.match(readme, /native Luna.*normal provider.*live model catalog/i, 'README must state that Sol and Luna keep their normal provider/catalog');
 assert.match(readme, /docs\/native-isolated-install\.md/, 'README must link the isolated installer guide');
-assert.match(readme, /desktop acceptance remains pending/i, 'README must distinguish prepared/configured state from desktop acceptance');
+assert.match(readme, /dated desktop record lists host-specific observed behavior/i, 'README must point to dated desktop observations');
 assert.doesNotMatch(readme, /formal DeepSeek path uses a shared `openai` provider/i, 'README must not present the shared-root path as formal');
 assert.doesNotMatch(readme, /Native gateway \(current path\)|Do not pass `agent_type`|ACL file lock.*blocks the intended UI check/i, 'README must not retain obsolete native route or UI blocker claims');
 assert.match(pluginDoc, /formal native DeepSeek path.*isolated.*native_deepseek/i, 'PLUGIN.md must describe the isolated route as formal');
@@ -129,6 +166,10 @@ const testScripts = [
   'route.test.mjs', 'route-hook.test.mjs', 'dsh-mcp-client.test.mjs', 'docs.test.mjs',
   'plugin-state.test.mjs', 'plugin-cross-process.test.mjs', 'plugin-trace.test.mjs',
   'plugin-mcp.test.mjs', 'plugin-client.test.mjs', 'plugin-manifest.test.mjs',
+  'plugin-router-settings.test.mjs', 'plugin-mcp-env.test.mjs',
+  'native-api-settings.test.mjs', 'native-api-routing.test.mjs', 'native-api-protocol.test.mjs',
+  'native-api-artifacts.test.mjs', 'native-api-install.test.mjs', 'native-api-lifecycle.test.mjs',
+  'native-api-origin.test.mjs', 'native-api-manager.test.mjs',
   'patch-backend-windows.test.mjs',
 ];
 for (const script of testScripts) assert.match(readme, new RegExp(script.replaceAll('.', '\\.')), `README must list ${script}`);

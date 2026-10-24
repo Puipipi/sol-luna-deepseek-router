@@ -308,6 +308,9 @@ export function isolatedAgentToml() {
     "你是原生 DeepSeek 子代理。使用简体中文汇报进度与结果；遵守主任务明确的文件范围、权限和验证要求。只执行被分配的工作，不扩大范围；遇到缺少权限或信息时如实说明。",
     '"""',
     "",
+    "[features]",
+    "unbounded_connection_retries = false",
+    "",
   ].join("\n");
 }
 
